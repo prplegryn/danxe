@@ -97,6 +97,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
       _library.selectedMotion?.id,
       _library.selectedCamera?.id,
       _library.selectedAudio?.id,
+      _library.selectedFace?.id,
     ].join(':');
     if (signature == _lastSceneSignature) return;
     _lastSceneSignature = signature;
@@ -126,6 +127,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
           motion: _library.selectedMotion,
           camera: _library.selectedCamera,
           audio: _library.selectedAudio,
+          face: _library.selectedFace,
         )
         .catchError((Object error) {
       if (!mounted) return;
@@ -161,6 +163,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
                         motion: _library.selectedMotion,
                         camera: _library.selectedCamera,
                         audio: _library.selectedAudio,
+                        face: _library.selectedFace,
                         player: _player,
                         busy: _library.busy,
                       ),
@@ -911,7 +914,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
     if (asset != null) {
       _logs.info('library', 'Imported ${asset.name}.');
       if (kind == AssetKind.face) {
-        _logs.warning('apply', 'Face assets are stored and selectable; renderer morph playback is reserved.');
+        _logs.info('apply', 'Face VMD is ready to apply.');
       }
     }
   }
@@ -920,7 +923,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
     _library.select(asset);
     _logs.info('apply', 'Applied ${asset.kind.name}: ${asset.name}.');
     if (asset.kind == AssetKind.face) {
-      _logs.warning('apply', 'Face asset selected; renderer morph playback is reserved.');
+      _logs.info('apply', 'Face VMD will be merged into the model animation.');
     }
   }
 
@@ -962,6 +965,7 @@ class _SceneHud extends StatelessWidget {
     required this.motion,
     required this.camera,
     required this.audio,
+    required this.face,
     required this.player,
     required this.busy,
   });
@@ -970,6 +974,7 @@ class _SceneHud extends StatelessWidget {
   final LibraryAsset? motion;
   final LibraryAsset? camera;
   final LibraryAsset? audio;
+  final LibraryAsset? face;
   final PlayerController player;
   final bool busy;
 
@@ -1000,7 +1005,7 @@ class _SceneHud extends StatelessWidget {
                   ),
                   const SizedBox(height: 3),
                   Text(
-                    _sceneSubtitle(motion, camera, audio, status),
+                    _sceneSubtitle(motion, camera, audio, face, status),
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: const TextStyle(fontSize: 12, color: AppColors.textMuted),
@@ -1030,6 +1035,7 @@ class _SceneHud extends StatelessWidget {
     LibraryAsset? motion,
     LibraryAsset? camera,
     LibraryAsset? audio,
+    LibraryAsset? face,
     String status,
   ) {
     final parts = <String>[
@@ -1037,6 +1043,7 @@ class _SceneHud extends StatelessWidget {
       if (motion != null) 'Motion: ${motion.name}',
       if (camera != null) 'Camera: ${camera.name}',
       if (audio != null) 'Audio: ${audio.name}',
+      if (face != null) 'Face: ${face.name}',
     ];
     return parts.join('  /  ');
   }

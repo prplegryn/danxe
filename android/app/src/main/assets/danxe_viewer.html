@@ -286,7 +286,6 @@
         if (object && object.mixer) object.mixer.setTime(state.current);
       }
       state.helper.update(0);
-      if (!state.cameraMotion) applyManualCamera();
     }
 
     function play() {
@@ -438,7 +437,6 @@
       } else {
         state.helper.update(delta);
         state.current = next;
-        if (!state.cameraMotion) applyManualCamera();
       }
     }
 

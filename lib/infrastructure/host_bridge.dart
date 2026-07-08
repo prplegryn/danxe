@@ -101,8 +101,15 @@ class HostBridge {
     LibraryAsset? motion,
     LibraryAsset? camera,
     LibraryAsset? audio,
+    LibraryAsset? face,
   }) {
-    final scene = _buildScene(model: model, motion: motion, camera: camera, audio: audio);
+    final scene = _buildScene(
+      model: model,
+      motion: motion,
+      camera: camera,
+      audio: audio,
+      face: face,
+    );
     return _channel.invokeMethod<void>(
       'viewerLoadScene',
       <String, Object?>{'scene': jsonEncode(scene)},
@@ -156,15 +163,20 @@ class HostBridge {
     LibraryAsset? motion,
     LibraryAsset? camera,
     LibraryAsset? audio,
+    LibraryAsset? face,
   }) {
     final modelUrl = model == null || model.pmxCandidates.isEmpty
         ? null
         : _assetUrl(model, model.pmxCandidates.first);
+    final motionUrls = <String>[
+      if (motion != null)
+        ...motion.motionCandidates.map((path) => _assetUrl(motion, path)),
+      if (face != null)
+        ...face.motionCandidates.map((path) => _assetUrl(face, path)),
+    ];
     return <String, Object?>{
       'modelUrl': modelUrl,
-      'motionUrls': motion == null
-          ? const <String>[]
-          : motion.motionCandidates.map((path) => _assetUrl(motion, path)).toList(),
+      'motionUrls': motionUrls,
       'cameraUrls': camera == null
           ? const <String>[]
           : camera.motionCandidates.map((path) => _assetUrl(camera, path)).toList(),
@@ -177,6 +189,7 @@ class HostBridge {
       'motionName': motion?.name,
       'cameraName': camera?.name,
       'audioName': audio?.name,
+      'faceName': face?.name,
     };
   }
 
