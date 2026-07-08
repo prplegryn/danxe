@@ -1,6 +1,8 @@
+import 'dart:io';
 import 'dart:ui';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../../core/design_tokens.dart';
 import '../../infrastructure/host_bridge.dart';
@@ -8,7 +10,6 @@ import '../export/export_controller.dart';
 import '../export/export_models.dart';
 import '../library/asset_models.dart';
 import '../library/resource_library_controller.dart';
-import 'mmd_scene.dart';
 import 'player_controller.dart';
 
 class PlayerScreen extends StatefulWidget {
@@ -24,32 +25,85 @@ class _PlayerScreenState extends State<PlayerScreen> {
   late final PlayerController _player;
   late final ExportController _export;
   bool _railExpanded = true;
+  bool _exporting = false;
+  String? _lastSceneSignature;
 
   @override
   void initState() {
     super.initState();
-    _bridge = HostBridge();
+    _bridge = HostBridge()..setViewerEventHandler(_onViewerEvent);
     _library = ResourceLibraryController(_bridge)..load();
     _player = PlayerController();
     _export = ExportController(_bridge);
-    _library.addListener(_syncTimeline);
+    _library.addListener(_syncScene);
   }
 
   @override
   void dispose() {
-    _library.removeListener(_syncTimeline);
+    _bridge.setViewerEventHandler(null);
+    _library.removeListener(_syncScene);
     _library.dispose();
     _player.dispose();
     super.dispose();
   }
 
-  void _syncTimeline() {
-    _player.applyMotion(_library.selectedMotion, _library.selectedCamera);
+  Future<void> _onViewerEvent(ViewerEvent event) async {
+    if (!mounted) return;
+    setState(() {
+      if (event.type == 'exportComplete' || event.type == 'exportError') {
+        _exporting = false;
+      }
+      _player.applyViewerEvent(event);
+    });
+    if (event.type == 'exportComplete' && event.path != null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Video exported: ${event.path}')),
+      );
+    }
+    if (event.type == 'exportError' || event.type == 'error') {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(event.message ?? 'Renderer error')),
+      );
+    }
+  }
+
+  void _syncScene() {
     if (_library.error != null && mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(_library.error!)),
       );
     }
+    final signature = [
+      _library.selectedModel?.id,
+      _library.selectedMotion?.id,
+      _library.selectedCamera?.id,
+      _library.selectedAudio?.id,
+    ].join(':');
+    if (signature == _lastSceneSignature) return;
+    _lastSceneSignature = signature;
+    final model = _library.selectedModel;
+    if (model == null) {
+      _player.setIdle('Import and select a PMX model.');
+      _bridge.viewerClear();
+      return;
+    }
+    if (!model.hasRenderableModel) {
+      _player.setError('Selected model asset has no PMX or PMD file.');
+      _bridge.viewerClear();
+      return;
+    }
+    _player.setLoading('Loading ${model.name}...');
+    _bridge
+        .viewerLoadScene(
+          model: model,
+          motion: _library.selectedMotion,
+          camera: _library.selectedCamera,
+          audio: _library.selectedAudio,
+        )
+        .catchError((Object error) {
+      if (!mounted) return;
+      _player.setError(error.toString());
+    });
   }
 
   @override
@@ -65,17 +119,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
                 final compact = constraints.maxWidth < 720;
                 final railWidth = compact
                     ? (_railExpanded ? constraints.maxWidth.clamp(280, 340).toDouble() : 72.0)
-                    : (_railExpanded ? 312.0 : 88.0);
+                    : (_railExpanded ? 304.0 : 80.0);
                 return Stack(
                   children: [
-                    Positioned.fill(
-                      child: MmdSceneViewport(
-                        player: _player,
-                        model: _library.selectedModel,
-                        motion: _library.selectedMotion,
-                        camera: _library.selectedCamera,
-                      ),
-                    ),
+                    const Positioned.fill(child: NativeMmdViewport()),
                     Positioned(
                       left: 0,
                       top: 0,
@@ -83,37 +130,43 @@ class _PlayerScreenState extends State<PlayerScreen> {
                       width: railWidth,
                       child: _LibraryRail(
                         expanded: _railExpanded,
-                        compact: compact,
                         controller: _library,
-                        onToggle: () {
-                          setState(() => _railExpanded = !_railExpanded);
-                        },
+                        onToggle: () => setState(() => _railExpanded = !_railExpanded),
                       ),
                     ),
                     Positioned(
-                      left: railWidth + AppSpacing.x4,
-                      right: compact ? AppSpacing.x4 : 116,
-                      top: AppSpacing.x4,
+                      left: railWidth + AppSpacing.x3,
+                      right: compact ? AppSpacing.x3 : 112,
+                      top: AppSpacing.x3,
                       child: _TopBar(
                         model: _library.selectedModel,
                         motion: _library.selectedMotion,
+                        audio: _library.selectedAudio,
+                        player: _player,
                         busy: _library.busy,
                       ),
                     ),
                     Positioned(
-                      right: AppSpacing.x4,
-                      top: compact ? null : 96,
-                      bottom: compact ? 112 : 120,
-                      width: compact ? 64 : 88,
-                      child: _CameraControls(player: _player, compact: compact),
+                      right: AppSpacing.x3,
+                      top: compact ? null : 92,
+                      bottom: compact ? 104 : 116,
+                      width: compact ? 64 : 80,
+                      child: _CameraControls(
+                        player: _player,
+                        onChanged: _pushCamera,
+                      ),
                     ),
                     Positioned(
-                      left: railWidth + AppSpacing.x4,
-                      right: AppSpacing.x4,
-                      bottom: AppSpacing.x4,
+                      left: railWidth + AppSpacing.x3,
+                      right: AppSpacing.x3,
+                      bottom: AppSpacing.x3,
                       child: _TransportBar(
                         player: _player,
-                        canExport: _library.selectedModel != null,
+                        exporting: _exporting,
+                        canExport: _library.selectedModel?.hasRenderableModel ?? false,
+                        onToggle: _togglePlayback,
+                        onSeek: _seek,
+                        onSpeed: _setSpeed,
                         onExport: () => _showExportSheet(context),
                       ),
                     ),
@@ -127,10 +180,43 @@ class _PlayerScreenState extends State<PlayerScreen> {
     );
   }
 
+  Future<void> _togglePlayback() async {
+    if (!_player.loaded) return;
+    if (_player.playing) {
+      await _bridge.viewerPause();
+      _player.markPlaying(false);
+    } else {
+      await _bridge.viewerPlay();
+      _player.markPlaying(true);
+    }
+  }
+
+  Future<void> _seek(double value) async {
+    _player.seek(value);
+    await _bridge.viewerSeek(value);
+  }
+
+  Future<void> _setSpeed(double value) async {
+    _player.setSpeed(value);
+    await _bridge.viewerSetSpeed(value);
+  }
+
+  Future<void> _pushCamera() async {
+    await _bridge.viewerSetCamera(
+      yaw: _player.yaw,
+      pitch: _player.pitch,
+      distance: _player.distance,
+    );
+  }
+
   Future<void> _showExportSheet(BuildContext context) async {
     final model = _library.selectedModel;
-    if (model == null) return;
-    var settings = const ExportSettings();
+    if (model == null || !model.hasRenderableModel) return;
+    var settings = ExportSettings(
+      durationSeconds: _player.duration > 0
+          ? _player.duration.round().clamp(1, 600).toInt()
+          : 10,
+    );
     await showModalBottomSheet<void>(
       context: context,
       showDragHandle: true,
@@ -148,7 +234,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     const Text(
-                      'Export job',
+                      'Export video',
                       style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700),
                     ),
                     const SizedBox(height: 12),
@@ -169,52 +255,60 @@ class _PlayerScreenState extends State<PlayerScreen> {
                       value: '${settings.fps}',
                       options: const ['24', '30', '60'],
                       onSelected: (value) {
-                        setSheetState(() {
-                          settings = settings.copyWith(fps: int.parse(value));
-                        });
+                        setSheetState(() => settings = settings.copyWith(fps: int.parse(value)));
                       },
                     ),
                     const SizedBox(height: 12),
-                    Text('Bitrate ${settings.videoBitrateMbps} Mbps'),
-                    Slider(
-                      min: 4,
-                      max: 24,
-                      divisions: 10,
-                      value: settings.videoBitrateMbps.toDouble(),
-                      onChanged: (value) {
+                    _SegmentedExportRow(
+                      label: 'Length',
+                      value: '${settings.durationSeconds}',
+                      options: [
+                        '10',
+                        '30',
+                        '${_player.duration > 0 ? _player.duration.round().clamp(1, 600) : 10}',
+                      ],
+                      onSelected: (value) {
                         setSheetState(() {
-                          settings = settings.copyWith(videoBitrateMbps: value.round());
+                          settings = settings.copyWith(durationSeconds: int.parse(value));
                         });
                       },
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      'Creates a render job spec for the future native nanoem video backend.',
-                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                            color: AppColors.textMuted,
-                          ),
                     ),
                     const SizedBox(height: 16),
                     SizedBox(
                       width: double.infinity,
                       child: FilledButton.icon(
-                        onPressed: () async {
-                          final messenger = ScaffoldMessenger.of(this.context);
-                          final navigator = Navigator.of(context);
-                          final job = await _export.createRenderJob(
-                            settings: settings,
-                            model: model,
-                            motion: _library.selectedMotion,
-                            camera: _library.selectedCamera,
-                            audio: _library.selectedAudio,
-                          );
-                          navigator.pop();
-                          messenger.showSnackBar(
-                            SnackBar(content: Text('Render job saved: ${job.path}')),
-                          );
-                        },
-                        icon: const Icon(Icons.outbox_rounded),
-                        label: const Text('Create job'),
+                        onPressed: _exporting
+                            ? null
+                            : () async {
+                                final messenger = ScaffoldMessenger.of(this.context);
+                                final navigator = Navigator.of(context);
+                                setState(() => _exporting = true);
+                                try {
+                                  final job = await _export.exportVideo(
+                                    settings: settings,
+                                    model: model,
+                                    motion: _library.selectedMotion,
+                                    camera: _library.selectedCamera,
+                                    audio: _library.selectedAudio,
+                                  );
+                                  navigator.pop();
+                                  messenger.showSnackBar(
+                                    SnackBar(content: Text('Video exported: ${job.path}')),
+                                  );
+                                } catch (error) {
+                                  setState(() => _exporting = false);
+                                  messenger.showSnackBar(
+                                    SnackBar(content: Text(error.toString())),
+                                  );
+                                }
+                              },
+                        icon: _exporting
+                            ? const SizedBox.square(
+                                dimension: 18,
+                                child: CircularProgressIndicator(strokeWidth: 2),
+                              )
+                            : const Icon(Icons.movie_creation_rounded),
+                        label: Text(_exporting ? 'Recording...' : 'Record video'),
                       ),
                     ),
                   ],
@@ -228,64 +322,77 @@ class _PlayerScreenState extends State<PlayerScreen> {
   }
 }
 
+class NativeMmdViewport extends StatelessWidget {
+  const NativeMmdViewport({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    if (!Platform.isAndroid) {
+      return const ColoredBox(
+        color: Colors.black,
+        child: Center(child: Text('Android MMD renderer required.')),
+      );
+    }
+    return AndroidView(
+      viewType: 'danxe/mmd_view',
+      creationParamsCodec: const StandardMessageCodec(),
+    );
+  }
+}
+
 class _TopBar extends StatelessWidget {
   const _TopBar({
     required this.model,
     required this.motion,
+    required this.audio,
+    required this.player,
     required this.busy,
   });
 
   final LibraryAsset? model;
   final LibraryAsset? motion;
+  final LibraryAsset? audio;
+  final PlayerController player;
   final bool busy;
 
   @override
   Widget build(BuildContext context) {
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        color: AppColors.surface.withOpacity(0.78),
-        border: Border.all(color: AppColors.line),
-        borderRadius: BorderRadius.circular(8),
-      ),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-        child: Row(
-          children: [
-            const Icon(Icons.view_in_ar_rounded, size: 22),
-            const SizedBox(width: 8),
-            const Text(
-              'Danxe',
-              style: TextStyle(fontWeight: FontWeight.w800, fontSize: 16),
+    final status = player.error ??
+        player.message ??
+        (player.loaded ? 'Renderer ready' : 'Renderer waiting');
+    return _Panel(
+      child: Row(
+        children: [
+          const Icon(Icons.view_in_ar_rounded, size: 22),
+          const SizedBox(width: 8),
+          const Text(
+            'Danxe',
+            style: TextStyle(fontWeight: FontWeight.w800, fontSize: 16),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                _StatusChip(icon: Icons.person_rounded, label: model?.name ?? 'No model'),
+                _StatusChip(icon: Icons.timeline_rounded, label: motion?.name ?? 'No motion'),
+                _StatusChip(icon: Icons.graphic_eq_rounded, label: audio?.name ?? 'No audio'),
+                _StatusChip(icon: Icons.info_outline_rounded, label: status),
+              ],
             ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: [
-                  _StatusChip(
-                    icon: Icons.person_rounded,
-                    label: model?.name ?? 'No model',
-                  ),
-                  _StatusChip(
-                    icon: Icons.timeline_rounded,
-                    label: motion?.name ?? 'No motion',
-                  ),
-                ],
-              ),
+          ),
+          if (busy || player.loading)
+            const SizedBox.square(
+              dimension: 22,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            )
+          else
+            Icon(
+              player.loaded ? Icons.check_circle_rounded : Icons.radio_button_unchecked_rounded,
+              size: 22,
             ),
-            AnimatedSwitcher(
-              duration: const Duration(milliseconds: 180),
-              child: busy
-                  ? const SizedBox.square(
-                      key: ValueKey('busy'),
-                      dimension: 22,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : const Icon(Icons.check_circle_rounded, key: ValueKey('ready'), size: 22),
-            ),
-          ],
-        ),
+        ],
       ),
     );
   }
@@ -327,13 +434,11 @@ class _StatusChip extends StatelessWidget {
 class _LibraryRail extends StatelessWidget {
   const _LibraryRail({
     required this.expanded,
-    required this.compact,
     required this.controller,
     required this.onToggle,
   });
 
   final bool expanded;
-  final bool compact;
   final ResourceLibraryController controller;
   final VoidCallback onToggle;
 
@@ -397,7 +502,7 @@ class _CollapsedLibrary extends StatelessWidget {
         return Padding(
           padding: const EdgeInsets.only(bottom: 8),
           child: IconButton.filledTonal(
-            tooltip: kind.label,
+            tooltip: 'Import ${kind.label}',
             onPressed: () => controller.importKind(kind),
             icon: Icon(_iconForKind(kind)),
           ),
@@ -472,12 +577,7 @@ class _SectionHeader extends StatelessWidget {
       children: [
         Icon(_iconForKind(kind), size: 18, color: AppColors.textMuted),
         const SizedBox(width: 8),
-        Expanded(
-          child: Text(
-            kind.label,
-            style: const TextStyle(fontWeight: FontWeight.w700),
-          ),
-        ),
+        Expanded(child: Text(kind.label, style: const TextStyle(fontWeight: FontWeight.w700))),
         Text('$count', style: const TextStyle(color: AppColors.textMuted)),
       ],
     );
@@ -497,10 +597,7 @@ class _EmptyLibraryRow extends StatelessWidget {
         border: Border.all(color: AppColors.line),
         borderRadius: BorderRadius.circular(8),
       ),
-      child: const Text(
-        'Empty',
-        style: TextStyle(color: AppColors.textMuted),
-      ),
+      child: const Text('Empty', style: TextStyle(color: AppColors.textMuted)),
     );
   }
 }
@@ -567,63 +664,71 @@ class _AssetTile extends StatelessWidget {
 }
 
 class _CameraControls extends StatelessWidget {
-  const _CameraControls({required this.player, required this.compact});
+  const _CameraControls({required this.player, required this.onChanged});
 
   final PlayerController player;
-  final bool compact;
+  final Future<void> Function() onChanged;
 
   @override
   Widget build(BuildContext context) {
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        color: AppColors.surface.withOpacity(0.78),
-        border: Border.all(color: AppColors.line),
-        borderRadius: BorderRadius.circular(8),
-      ),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(vertical: 8),
-        child: Column(
-          children: [
-            IconButton(
-              tooltip: 'Reset camera',
-              onPressed: player.resetCamera,
-              icon: const Icon(Icons.center_focus_strong_rounded),
-            ),
-            const Divider(color: AppColors.line),
-            Expanded(
-              child: RotatedBox(
-                quarterTurns: 3,
-                child: Slider(
-                  min: -180,
-                  max: 180,
-                  value: player.yaw,
-                  onChanged: (value) => player.orbit(yaw: value),
-                ),
+    return _Panel(
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      child: Column(
+        children: [
+          IconButton(
+            tooltip: 'Reset camera',
+            onPressed: () {
+              player.resetCamera();
+              onChanged();
+            },
+            icon: const Icon(Icons.center_focus_strong_rounded),
+          ),
+          const Divider(color: AppColors.line),
+          Expanded(
+            child: RotatedBox(
+              quarterTurns: 3,
+              child: Slider(
+                min: -180,
+                max: 180,
+                value: player.yaw,
+                onChanged: (value) {
+                  player.orbit(yaw: value);
+                  onChanged();
+                },
               ),
             ),
-            Expanded(
-              child: RotatedBox(
-                quarterTurns: 3,
-                child: Slider(
-                  min: 1.4,
-                  max: 12,
-                  value: player.distance,
-                  onChanged: (value) => player.orbit(distance: value),
-                ),
+          ),
+          Expanded(
+            child: RotatedBox(
+              quarterTurns: 3,
+              child: Slider(
+                min: 1.4,
+                max: 80,
+                value: player.distance,
+                onChanged: (value) {
+                  player.orbit(distance: value);
+                  onChanged();
+                },
               ),
             ),
-            IconButton(
-              tooltip: 'Pitch up',
-              onPressed: () => player.orbit(pitch: player.pitch + 4),
-              icon: const Icon(Icons.keyboard_arrow_up_rounded),
-            ),
-            IconButton(
-              tooltip: 'Pitch down',
-              onPressed: () => player.orbit(pitch: player.pitch - 4),
-              icon: const Icon(Icons.keyboard_arrow_down_rounded),
-            ),
-          ],
-        ),
+          ),
+          IconButton(
+            tooltip: 'Pitch up',
+            onPressed: () {
+              player.orbit(pitch: player.pitch + 4);
+              onChanged();
+            },
+            icon: const Icon(Icons.keyboard_arrow_up_rounded),
+          ),
+          IconButton(
+            tooltip: 'Pitch down',
+            onPressed: () {
+              player.orbit(pitch: player.pitch - 4);
+              onChanged();
+            },
+            icon: const Icon(Icons.keyboard_arrow_down_rounded),
+          ),
+        ],
       ),
     );
   }
@@ -632,71 +737,79 @@ class _CameraControls extends StatelessWidget {
 class _TransportBar extends StatelessWidget {
   const _TransportBar({
     required this.player,
+    required this.exporting,
     required this.canExport,
+    required this.onToggle,
+    required this.onSeek,
+    required this.onSpeed,
     required this.onExport,
   });
 
   final PlayerController player;
+  final bool exporting;
   final bool canExport;
+  final VoidCallback onToggle;
+  final ValueChanged<double> onSeek;
+  final ValueChanged<double> onSpeed;
   final VoidCallback onExport;
 
   @override
   Widget build(BuildContext context) {
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        color: AppColors.surface.withOpacity(0.86),
-        border: Border.all(color: AppColors.line),
-        borderRadius: BorderRadius.circular(8),
-      ),
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(8, 8, 12, 8),
-        child: Row(
-          children: [
-            IconButton.filled(
-              tooltip: player.playing ? 'Pause' : 'Play',
-              onPressed: player.toggle,
-              icon: Icon(player.playing ? Icons.pause_rounded : Icons.play_arrow_rounded),
+    return _Panel(
+      padding: const EdgeInsets.fromLTRB(8, 8, 12, 8),
+      child: Row(
+        children: [
+          IconButton.filled(
+            tooltip: player.playing ? 'Pause' : 'Play',
+            onPressed: player.loaded ? onToggle : null,
+            icon: Icon(player.playing ? Icons.pause_rounded : Icons.play_arrow_rounded),
+          ),
+          const SizedBox(width: 8),
+          Text(
+            player.timeLabel,
+            style: const TextStyle(fontFeatures: [FontFeature.tabularFigures()]),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Slider(
+              min: 0,
+              max: player.duration <= 0 ? 1 : player.duration,
+              value: player.duration <= 0 ? 0 : player.position.clamp(0, player.duration).toDouble(),
+              onChanged: player.loaded ? onSeek : null,
             ),
-            const SizedBox(width: 8),
-            Text(
-              player.timeLabel,
-              style: const TextStyle(fontFeatures: [FontFeature.tabularFigures()]),
+          ),
+          const SizedBox(width: 8),
+          SizedBox(
+            width: 72,
+            child: DropdownButton<double>(
+              isExpanded: true,
+              value: player.speed,
+              underline: const SizedBox.shrink(),
+              items: const [
+                DropdownMenuItem(value: 0.5, child: Text('0.5x')),
+                DropdownMenuItem(value: 1.0, child: Text('1x')),
+                DropdownMenuItem(value: 1.5, child: Text('1.5x')),
+                DropdownMenuItem(value: 2.0, child: Text('2x')),
+              ],
+              onChanged: player.loaded
+                  ? (value) {
+                      if (value != null) onSpeed(value);
+                    }
+                  : null,
             ),
-            const SizedBox(width: 10),
-            Expanded(
-              child: Slider(
-                min: 0,
-                max: player.duration,
-                value: player.position.clamp(0, player.duration).toDouble(),
-                onChanged: player.seek,
-              ),
-            ),
-            const SizedBox(width: 8),
-            SizedBox(
-              width: 72,
-              child: DropdownButton<double>(
-                isExpanded: true,
-                value: player.speed,
-                underline: const SizedBox.shrink(),
-                items: const [
-                  DropdownMenuItem(value: 0.5, child: Text('0.5x')),
-                  DropdownMenuItem(value: 1.0, child: Text('1x')),
-                  DropdownMenuItem(value: 1.5, child: Text('1.5x')),
-                  DropdownMenuItem(value: 2.0, child: Text('2x')),
-                ],
-                onChanged: (value) {
-                  if (value != null) player.setSpeed(value);
-                },
-              ),
-            ),
-            const SizedBox(width: 8),
-            FilledButton.icon(
-              onPressed: canExport ? onExport : null,
-              icon: const Icon(Icons.movie_creation_rounded),
-              label: const Text('Export'),
-            ),
-          ],
-        ),
+          ),
+          const SizedBox(width: 8),
+          FilledButton.icon(
+            onPressed: canExport && player.loaded && !exporting ? onExport : null,
+            icon: exporting
+                ? const SizedBox.square(
+                    dimension: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.movie_creation_rounded),
+            label: Text(exporting ? 'Recording' : 'Export'),
+          ),
+        ],
       ),
     );
   }
@@ -723,18 +836,33 @@ class _SegmentedExportRow extends StatelessWidget {
         Expanded(
           child: SegmentedButton<String>(
             segments: options
-                .map(
-                  (option) => ButtonSegment<String>(
-                    value: option,
-                    label: Text(option),
-                  ),
-                )
+                .toSet()
+                .map((option) => ButtonSegment<String>(value: option, label: Text(option)))
                 .toList(),
             selected: {value},
             onSelectionChanged: (selected) => onSelected(selected.first),
           ),
         ),
       ],
+    );
+  }
+}
+
+class _Panel extends StatelessWidget {
+  const _Panel({required this.child, this.padding = const EdgeInsets.all(8)});
+
+  final Widget child;
+  final EdgeInsetsGeometry padding;
+
+  @override
+  Widget build(BuildContext context) {
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: AppColors.surface.withOpacity(0.84),
+        border: Border.all(color: AppColors.line),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Padding(padding: padding, child: child),
     );
   }
 }

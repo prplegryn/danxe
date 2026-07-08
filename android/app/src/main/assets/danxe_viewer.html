@@ -1,0 +1,462 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Danxe MMD Renderer</title>
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+      }
+    }
+  </script>
+  <style>
+    html, body, #stage {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      overflow: hidden;
+      background: #05070d;
+      color: #e5e7eb;
+      font-family: system-ui, sans-serif;
+    }
+    #status {
+      position: fixed;
+      left: 50%;
+      top: 50%;
+      max-width: min(72vw, 560px);
+      transform: translate(-50%, -50%);
+      padding: 14px 18px;
+      border: 1px solid rgba(255,255,255,.16);
+      border-radius: 8px;
+      background: rgba(15,23,42,.82);
+      line-height: 1.45;
+      text-align: center;
+      white-space: pre-wrap;
+      pointer-events: none;
+    }
+    #status.hidden {
+      display: none;
+    }
+  </style>
+</head>
+<body>
+  <div id="stage"></div>
+  <div id="status">Renderer ready. Select a PMX model.</div>
+  <script type="module">
+    import * as THREE from 'three';
+    import { MMDLoader } from 'three/addons/loaders/MMDLoader.js';
+    import { MMDAnimationHelper } from 'three/addons/animation/MMDAnimationHelper.js';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+    const stage = document.getElementById('stage');
+    const statusEl = document.getElementById('status');
+    const clock = new THREE.Clock();
+    const state = {
+      renderer: null,
+      scene: null,
+      camera: null,
+      controls: null,
+      helper: null,
+      mesh: null,
+      audio: null,
+      listener: null,
+      current: 0,
+      duration: 0,
+      speed: 1,
+      playing: false,
+      loading: false,
+      loaded: false,
+      cameraMotion: false,
+      manualCamera: { yaw: 18, pitch: -8, distance: 5.4 },
+      recorder: null
+    };
+
+    function post(payload) {
+      if (window.DanxeAndroid && window.DanxeAndroid.postStatus) {
+        window.DanxeAndroid.postStatus(JSON.stringify(payload));
+      }
+    }
+
+    function setStatus(text, hidden = false) {
+      statusEl.textContent = text;
+      statusEl.classList.toggle('hidden', hidden);
+      post({ type: 'message', message: text, hidden });
+    }
+
+    function initRenderer() {
+      if (state.renderer) return;
+      state.scene = new THREE.Scene();
+      state.scene.background = new THREE.Color(0x05070d);
+      state.camera = new THREE.PerspectiveCamera(35, innerWidth / innerHeight, 0.1, 2000);
+      state.camera.position.set(0, 10, 35);
+      state.listener = new THREE.AudioListener();
+      state.camera.add(state.listener);
+      state.scene.add(state.camera);
+
+      state.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false, preserveDrawingBuffer: true });
+      state.renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+      state.renderer.setSize(innerWidth, innerHeight);
+      state.renderer.outputColorSpace = THREE.SRGBColorSpace;
+      stage.appendChild(state.renderer.domElement);
+
+      state.controls = new OrbitControls(state.camera, state.renderer.domElement);
+      state.controls.enableDamping = true;
+      state.controls.target.set(0, 10, 0);
+
+      const hemi = new THREE.HemisphereLight(0xffffff, 0x283044, 2.0);
+      state.scene.add(hemi);
+      const key = new THREE.DirectionalLight(0xffffff, 2.1);
+      key.position.set(20, 32, 18);
+      state.scene.add(key);
+      const floor = new THREE.GridHelper(80, 40, 0x1e3a5f, 0x142033);
+      floor.position.y = 0;
+      state.scene.add(floor);
+
+      window.addEventListener('resize', resize, false);
+      resize();
+      requestAnimationFrame(tick);
+    }
+
+    function resetScene() {
+      if (!state.scene) return;
+      if (state.mesh) {
+        state.scene.remove(state.mesh);
+        disposeObject(state.mesh);
+      }
+      if (state.audio) {
+        try { state.audio.stop(); } catch (_) {}
+      }
+      state.helper = new MMDAnimationHelper({ sync: true, pmxAnimation: true });
+      state.helper.enable('physics', false);
+      state.mesh = null;
+      state.audio = null;
+      state.current = 0;
+      state.duration = 0;
+      state.playing = false;
+      state.loaded = false;
+      state.cameraMotion = false;
+    }
+
+    function disposeObject(object) {
+      object.traverse((child) => {
+        if (child.geometry) child.geometry.dispose();
+        const materials = Array.isArray(child.material) ? child.material : [child.material];
+        for (const material of materials) {
+          if (!material) continue;
+          for (const key of Object.keys(material)) {
+            const value = material[key];
+            if (value && value.isTexture) value.dispose();
+          }
+          material.dispose();
+        }
+      });
+    }
+
+    async function loadScene(input) {
+      initRenderer();
+      resetScene();
+      if (!input.modelUrl) {
+        setStatus('No PMX model selected.');
+        post({ type: 'loaded', loaded: false, duration: 0 });
+        return;
+      }
+      state.loading = true;
+      setStatus('Loading PMX model...');
+      post({ type: 'loading', loading: true });
+      const loader = new MMDLoader();
+      loader.setCrossOrigin('anonymous');
+
+      try {
+        const motionUrls = Array.isArray(input.motionUrls) ? input.motionUrls : [];
+        const cameraUrls = Array.isArray(input.cameraUrls) ? input.cameraUrls : [];
+        const mmd = await loadModelAndMotion(loader, input.modelUrl, motionUrls);
+        state.mesh = mmd.mesh;
+        state.mesh.frustumCulled = false;
+        state.scene.add(state.mesh);
+        state.helper.add(state.mesh, { animation: mmd.animation, physics: false });
+        state.duration = Math.max(state.duration, animationDuration(mmd.animation));
+        frameModel(state.mesh);
+
+        if (cameraUrls.length > 0) {
+          const cameraAnimation = await loadCameraAnimation(loader, cameraUrls);
+          state.helper.add(state.camera, { animation: cameraAnimation });
+          state.cameraMotion = true;
+          state.duration = Math.max(state.duration, animationDuration(cameraAnimation));
+        } else {
+          applyManualCamera();
+        }
+
+        if (input.audioUrl) {
+          await loadAudio(input.audioUrl);
+        }
+
+        state.loaded = true;
+        state.loading = false;
+        state.current = 0;
+        setHelperTime(0);
+        setStatus('', true);
+        postStatus();
+      } catch (error) {
+        state.loading = false;
+        state.loaded = false;
+        const message = error && error.message ? error.message : String(error);
+        setStatus('Renderer error:\n' + message);
+        post({ type: 'error', message });
+      }
+    }
+
+    function loadModelAndMotion(loader, modelUrl, motionUrls) {
+      return new Promise((resolve, reject) => {
+        if (motionUrls.length > 0) {
+          loader.loadWithAnimation(modelUrl, motionUrls, resolve, undefined, reject);
+        } else {
+          loader.load(modelUrl, (mesh) => resolve({ mesh, animation: undefined }), undefined, reject);
+        }
+      });
+    }
+
+    function loadCameraAnimation(loader, urls) {
+      return new Promise((resolve, reject) => {
+        loader.loadAnimation(urls, state.camera, resolve, undefined, reject);
+      });
+    }
+
+    function loadAudio(url) {
+      return new Promise((resolve, reject) => {
+        const loader = new THREE.AudioLoader();
+        loader.load(url, (buffer) => {
+          const audio = new THREE.Audio(state.listener);
+          audio.setBuffer(buffer);
+          audio.setLoop(false);
+          audio.setVolume(0.9);
+          state.audio = audio;
+          state.duration = Math.max(state.duration, buffer.duration);
+          resolve();
+        }, undefined, reject);
+      });
+    }
+
+    function animationDuration(animation) {
+      if (!animation) return 0;
+      if (Array.isArray(animation)) {
+        return animation.reduce((max, clip) => Math.max(max, clip.duration || 0), 0);
+      }
+      return animation.duration || 0;
+    }
+
+    function frameModel(mesh) {
+      const box = new THREE.Box3().setFromObject(mesh);
+      const size = box.getSize(new THREE.Vector3());
+      const center = box.getCenter(new THREE.Vector3());
+      state.controls.target.copy(center);
+      const radius = Math.max(size.x, size.y, size.z, 1);
+      state.manualCamera.distance = Math.max(radius * 1.25, 20);
+      applyManualCamera();
+    }
+
+    function applyManualCamera() {
+      if (!state.controls || state.cameraMotion) return;
+      const target = state.controls.target;
+      const yaw = THREE.MathUtils.degToRad(state.manualCamera.yaw);
+      const pitch = THREE.MathUtils.degToRad(state.manualCamera.pitch);
+      const distance = state.manualCamera.distance;
+      const x = Math.sin(yaw) * Math.cos(pitch) * distance;
+      const y = Math.sin(pitch) * distance + target.y;
+      const z = Math.cos(yaw) * Math.cos(pitch) * distance;
+      state.camera.position.set(target.x + x, y, target.z + z);
+      state.camera.lookAt(target);
+      state.controls.update();
+    }
+
+    function setHelperTime(second) {
+      state.current = Math.max(0, Math.min(second, Math.max(state.duration, 0)));
+      if (!state.helper) return;
+      for (const mesh of state.helper.meshes) {
+        const object = state.helper.objects.get(mesh);
+        if (object && object.mixer) object.mixer.setTime(state.current);
+      }
+      if (state.helper.camera) {
+        const object = state.helper.objects.get(state.helper.camera);
+        if (object && object.mixer) object.mixer.setTime(state.current);
+      }
+      state.helper.update(0);
+      if (!state.cameraMotion) applyManualCamera();
+    }
+
+    function play() {
+      if (!state.loaded) return;
+      state.playing = true;
+      if (state.audio && state.audio.buffer) {
+        try {
+          if (state.audio.isPlaying) state.audio.stop();
+          state.audio.offset = Math.min(state.current, state.audio.buffer.duration);
+          state.audio.play();
+        } catch (_) {}
+      }
+      postStatus();
+    }
+
+    function pause() {
+      state.playing = false;
+      if (state.audio && state.audio.isPlaying) {
+        try { state.audio.stop(); } catch (_) {}
+      }
+      postStatus();
+    }
+
+    function seek(payload) {
+      const second = Number(payload && payload.second || 0);
+      const wasPlaying = state.playing;
+      pause();
+      setHelperTime(second);
+      if (wasPlaying) play();
+      postStatus();
+    }
+
+    function setSpeed(payload) {
+      state.speed = Math.max(0.25, Math.min(Number(payload && payload.speed || 1), 2));
+      postStatus();
+    }
+
+    function setCamera(payload) {
+      state.manualCamera = {
+        yaw: Number(payload && payload.yaw || state.manualCamera.yaw),
+        pitch: Number(payload && payload.pitch || state.manualCamera.pitch),
+        distance: Number(payload && payload.distance || state.manualCamera.distance)
+      };
+      applyManualCamera();
+      postStatus();
+    }
+
+    function clear() {
+      pause();
+      resetScene();
+      setStatus('Select a PMX model.');
+      postStatus();
+    }
+
+    async function exportVideo(settings) {
+      if (!state.renderer || !state.loaded) {
+        exportError('No rendered model is loaded.');
+        return;
+      }
+      const canvas = state.renderer.domElement;
+      if (!canvas.captureStream || !window.MediaRecorder) {
+        exportError('This WebView does not support canvas video recording.');
+        return;
+      }
+      const fps = Number(settings && settings.fps || 30);
+      const width = Number(settings && settings.width || canvas.width);
+      const height = Number(settings && settings.height || canvas.height);
+      const seconds = Math.max(1, Math.min(Number(settings && settings.seconds || state.duration || 10), 600));
+      const previousSize = { width: canvas.width, height: canvas.height };
+      state.renderer.setSize(width, height, false);
+      resizeCamera(width, height);
+      const chunks = [];
+      const stream = canvas.captureStream(fps);
+      const mimeType = pickMimeType();
+      const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+      state.recorder = recorder;
+      recorder.ondataavailable = (event) => {
+        if (event.data && event.data.size > 0) chunks.push(event.data);
+      };
+      recorder.onerror = (event) => exportError(event.error ? event.error.message : 'Recording failed.');
+      recorder.onstop = async () => {
+        try {
+          stream.getTracks().forEach((track) => track.stop());
+          const blob = new Blob(chunks, { type: recorder.mimeType || 'video/webm' });
+          const bytes = new Uint8Array(await blob.arrayBuffer());
+          let binary = '';
+          for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+          const base64 = btoa(binary);
+          const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+          window.DanxeAndroid.saveRecording(base64, blob.type, `danxe_${stamp}.webm`);
+        } catch (error) {
+          exportError(error && error.message ? error.message : String(error));
+        } finally {
+          state.renderer.setSize(previousSize.width, previousSize.height, false);
+          resize();
+          state.recorder = null;
+        }
+      };
+      post({ type: 'exportStarted', seconds, fps, width, height });
+      seek({ second: 0 });
+      play();
+      recorder.start(1000);
+      setTimeout(() => {
+        pause();
+        if (recorder.state !== 'inactive') recorder.stop();
+      }, seconds * 1000);
+    }
+
+    function exportError(message) {
+      if (window.DanxeAndroid && window.DanxeAndroid.onExportError) {
+        window.DanxeAndroid.onExportError(message);
+      }
+      post({ type: 'exportError', message });
+    }
+
+    function pickMimeType() {
+      const types = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm'];
+      return types.find((type) => MediaRecorder.isTypeSupported(type)) || '';
+    }
+
+    function tick() {
+      requestAnimationFrame(tick);
+      const delta = Math.min(clock.getDelta(), 1 / 15);
+      if (state.loaded && state.playing && state.duration > 0) {
+        state.current += delta * state.speed;
+        if (state.current > state.duration) state.current = 0;
+        setHelperTime(state.current);
+      }
+      if (state.controls && !state.cameraMotion) state.controls.update();
+      if (state.renderer && state.scene && state.camera) {
+        state.renderer.render(state.scene, state.camera);
+      }
+    }
+
+    function postStatus() {
+      post({
+        type: 'status',
+        loaded: state.loaded,
+        loading: state.loading,
+        playing: state.playing,
+        current: state.current,
+        duration: state.duration,
+        speed: state.speed,
+        cameraMotion: state.cameraMotion
+      });
+    }
+
+    setInterval(postStatus, 350);
+
+    function resize() {
+      if (!state.renderer) return;
+      state.renderer.setSize(innerWidth, innerHeight);
+      resizeCamera(innerWidth, innerHeight);
+    }
+
+    function resizeCamera(width, height) {
+      if (!state.camera) return;
+      state.camera.aspect = width / Math.max(height, 1);
+      state.camera.updateProjectionMatrix();
+    }
+
+    window.Danxe = {
+      loadScene,
+      clear,
+      play,
+      pause,
+      seek,
+      setSpeed,
+      setCamera,
+      exportVideo
+    };
+    initRenderer();
+    postStatus();
+  </script>
+</body>
+</html>

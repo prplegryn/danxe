@@ -9,6 +9,8 @@ import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
+import org.json.JSONArray
+import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
 import java.text.SimpleDateFormat
@@ -16,17 +18,22 @@ import java.util.Date
 import java.util.Locale
 import java.util.UUID
 import java.util.zip.ZipInputStream
-import org.json.JSONArray
-import org.json.JSONObject
 
 class MainActivity : FlutterActivity() {
     private val channelName = "danxe/host"
+    private val viewerEventsName = "danxe/viewer_events"
     private val importRequestCode = 7301
     private var pendingImportResult: MethodChannel.Result? = null
     private var pendingKind: String = "other"
+    private lateinit var viewerEvents: MethodChannel
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        viewerEvents = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, viewerEventsName)
+        flutterEngine.platformViewsController.registry.registerViewFactory(
+            "danxe/mmd_view",
+            MmdWebViewFactory(viewerEvents, libraryRoot()),
+        )
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, channelName)
             .setMethodCallHandler { call, result ->
                 when (call.method) {
@@ -34,6 +41,14 @@ class MainActivity : FlutterActivity() {
                     "scanLibrary" -> result.success(scanLibrary().toString())
                     "importAsset" -> startImport(call, result)
                     "deleteAsset" -> deleteAsset(call, result)
+                    "viewerLoadScene" -> viewerLoadScene(call, result)
+                    "viewerClear" -> viewerCommand("clear", result)
+                    "viewerPlay" -> viewerCommand("play", result)
+                    "viewerPause" -> viewerCommand("pause", result)
+                    "viewerSeek" -> viewerCommand("seek", result, JSONObject().put("second", call.argument<Double>("second") ?: 0.0))
+                    "viewerSetSpeed" -> viewerCommand("setSpeed", result, JSONObject().put("speed", call.argument<Double>("speed") ?: 1.0))
+                    "viewerSetCamera" -> viewerSetCamera(call, result)
+                    "viewerExport" -> viewerExport(call, result)
                     else -> result.notImplemented()
                 }
             }
@@ -88,6 +103,50 @@ class MainActivity : FlutterActivity() {
             target.deleteRecursively()
         }
         result.success(null)
+    }
+
+    private fun viewerLoadScene(call: MethodCall, result: MethodChannel.Result) {
+        val sceneText = call.argument<String>("scene") ?: "{}"
+        val view = MmdViewRegistry.current
+        if (view == null) {
+            result.error("VIEWER_UNAVAILABLE", "The MMD renderer view is not mounted.", null)
+            return
+        }
+        view.loadScene(JSONObject(sceneText))
+        result.success(null)
+    }
+
+    private fun viewerCommand(name: String, result: MethodChannel.Result, payload: JSONObject = JSONObject()) {
+        val view = MmdViewRegistry.current
+        if (view == null) {
+            result.error("VIEWER_UNAVAILABLE", "The MMD renderer view is not mounted.", null)
+            return
+        }
+        view.command(name, payload)
+        result.success(null)
+    }
+
+    private fun viewerSetCamera(call: MethodCall, result: MethodChannel.Result) {
+        val payload = JSONObject()
+            .put("yaw", call.argument<Double>("yaw") ?: 18.0)
+            .put("pitch", call.argument<Double>("pitch") ?: -8.0)
+            .put("distance", call.argument<Double>("distance") ?: 5.4)
+        viewerCommand("setCamera", result, payload)
+    }
+
+    private fun viewerExport(call: MethodCall, result: MethodChannel.Result) {
+        val view = MmdViewRegistry.current
+        if (view == null) {
+            result.error("VIEWER_UNAVAILABLE", "The MMD renderer view is not mounted.", null)
+            return
+        }
+        if (MmdViewRegistry.pendingExportResult != null) {
+            result.error("EXPORT_BUSY", "A video export is already running.", null)
+            return
+        }
+        val payload = JSONObject(call.argument<String>("settings") ?: "{}")
+        MmdViewRegistry.pendingExportResult = result
+        view.command("exportVideo", payload)
     }
 
     private fun importUri(kind: String, uri: Uri): JSONObject {
@@ -242,4 +301,3 @@ class MainActivity : FlutterActivity() {
         }
     }
 }
-
