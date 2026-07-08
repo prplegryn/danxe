@@ -182,10 +182,15 @@ class HostBridge {
 
   String _assetUrl(LibraryAsset asset, String relativePath) {
     final normalized = relativePath.replaceAll('\\', '/');
-    final absolute = normalized.startsWith('/')
-        ? normalized
-        : '${asset.path}/$normalized';
-    return Uri.file(absolute).toString();
+    final segments = normalized
+        .split('/')
+        .where((segment) => segment.isNotEmpty)
+        .toList(growable: false);
+    return Uri(
+      scheme: 'https',
+      host: 'danxe.local',
+      pathSegments: ['library', asset.kind.name, asset.id, ...segments],
+    ).toString();
   }
 
   Future<void> _handleViewerEvent(MethodCall call) async {

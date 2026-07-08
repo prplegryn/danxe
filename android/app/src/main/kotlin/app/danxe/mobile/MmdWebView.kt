@@ -2,18 +2,22 @@ package app.danxe.mobile
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 import android.util.Base64
 import android.view.View
 import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
+import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import io.flutter.plugin.common.MethodChannel
 import io.flutter.plugin.platform.PlatformView
 import java.io.File
+import java.util.Locale
 import org.json.JSONObject
 
 class MmdWebView(
@@ -25,6 +29,7 @@ class MmdWebView(
     private val webView = WebView(context)
     private val pendingScripts = mutableListOf<String>()
     private var pageReady = false
+    private val virtualHost = "danxe.local"
 
     init {
         configureWebView()
@@ -71,6 +76,15 @@ class MmdWebView(
                 pendingScripts.clear()
                 scripts.forEach { webView.evaluateJavascript(it, null) }
             }
+
+            override fun shouldInterceptRequest(
+                view: WebView?,
+                request: WebResourceRequest?,
+            ): WebResourceResponse? {
+                val url = request?.url ?: return null
+                if (url.scheme != "https" || url.host != virtualHost) return null
+                return openVirtualLibraryFile(url)
+            }
         }
         webView.addJavascriptInterface(AndroidBridge(), "DanxeAndroid")
         webView.settings.apply {
@@ -83,6 +97,83 @@ class MmdWebView(
             allowUniversalAccessFromFileURLs = true
             mediaPlaybackRequiresUserGesture = false
             mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+        }
+    }
+
+    private fun openVirtualLibraryFile(uri: Uri): WebResourceResponse {
+        try {
+            val segments = uri.pathSegments
+                .dropWhile { it.isEmpty() }
+                .flatMap { segment ->
+                    segment.split('\\', '/').filter { it.isNotEmpty() }
+                }
+            if (segments.any { it == ".." }) {
+                return textResponse(403, "Forbidden", "Blocked unsafe Danxe resource.")
+            }
+            if (segments.firstOrNull() != "library" || segments.size < 4) {
+                return textResponse(404, "Not Found", "Unknown Danxe resource.")
+            }
+
+            var target = libraryRoot
+            for (segment in segments.drop(1)) {
+                target = File(target, segment)
+            }
+
+            val rootPath = libraryRoot.canonicalPath
+            val targetFile = target.canonicalFile
+            if (!targetFile.path.startsWith(rootPath + File.separator)) {
+                return textResponse(403, "Forbidden", "Blocked unsafe Danxe resource.")
+            }
+            if (!targetFile.isFile) {
+                return textResponse(404, "Not Found", "Danxe resource not found.")
+            }
+
+            return WebResourceResponse(
+                mimeTypeForFile(targetFile),
+                null,
+                200,
+                "OK",
+                corsHeaders(),
+                targetFile.inputStream(),
+            )
+        } catch (error: Exception) {
+            return textResponse(500, "Internal Server Error", error.message ?: "Failed to read Danxe resource.")
+        }
+    }
+
+    private fun textResponse(status: Int, reason: String, body: String): WebResourceResponse {
+        return WebResourceResponse(
+            "text/plain",
+            "UTF-8",
+            status,
+            reason,
+            corsHeaders(),
+            body.byteInputStream(),
+        )
+    }
+
+    private fun corsHeaders(): Map<String, String> {
+        return mapOf(
+            "Access-Control-Allow-Origin" to "*",
+            "Access-Control-Allow-Methods" to "GET, OPTIONS",
+            "Access-Control-Allow-Headers" to "*",
+            "Cross-Origin-Resource-Policy" to "cross-origin",
+        )
+    }
+
+    private fun mimeTypeForFile(file: File): String {
+        return when (file.extension.lowercase(Locale.US)) {
+            "pmx", "pmd", "vmd", "vpd", "vpdpose", "dds", "spa", "sph" -> "application/octet-stream"
+            "png" -> "image/png"
+            "jpg", "jpeg" -> "image/jpeg"
+            "bmp" -> "image/bmp"
+            "tga" -> "image/x-tga"
+            "wav" -> "audio/wav"
+            "mp3" -> "audio/mpeg"
+            "m4a", "aac" -> "audio/mp4"
+            "flac" -> "audio/flac"
+            "ogg" -> "audio/ogg"
+            else -> "application/octet-stream"
         }
     }
 
@@ -137,4 +228,3 @@ class MmdWebView(
         }
     }
 }
-
