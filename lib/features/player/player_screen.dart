@@ -10,6 +10,7 @@ import '../export/export_controller.dart';
 import '../export/export_models.dart';
 import '../library/asset_models.dart';
 import '../library/resource_library_controller.dart';
+import '../logs/app_log_controller.dart';
 import 'player_controller.dart';
 
 class PlayerScreen extends StatefulWidget {
@@ -24,13 +25,16 @@ class _PlayerScreenState extends State<PlayerScreen> {
   late final ResourceLibraryController _library;
   late final PlayerController _player;
   late final ExportController _export;
-  bool _railExpanded = true;
+  late final AppLogController _logs;
+
   bool _exporting = false;
   String? _lastSceneSignature;
+  String? _lastLibraryError;
 
   @override
   void initState() {
     super.initState();
+    _logs = AppLogController()..info('app', 'Danxe started.');
     _bridge = HostBridge()..setViewerEventHandler(_onViewerEvent);
     _library = ResourceLibraryController(_bridge)..load();
     _player = PlayerController();
@@ -44,6 +48,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
     _library.removeListener(_syncScene);
     _library.dispose();
     _player.dispose();
+    _logs.dispose();
     super.dispose();
   }
 
@@ -55,24 +60,38 @@ class _PlayerScreenState extends State<PlayerScreen> {
       }
       _player.applyViewerEvent(event);
     });
-    if (event.type == 'exportComplete' && event.path != null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Video exported: ${event.path}')),
-      );
-    }
-    if (event.type == 'exportError' || event.type == 'error') {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(event.message ?? 'Renderer error')),
-      );
+
+    switch (event.type) {
+      case 'loaded':
+        _logs.info('renderer', 'Scene loaded.');
+        break;
+      case 'message':
+        if ((event.message ?? '').isNotEmpty) {
+          _logs.info('renderer', event.message!);
+        }
+        break;
+      case 'error':
+      case 'exportError':
+        _logs.error('renderer', event.message ?? 'Renderer failed.');
+        _showMessage(event.message ?? 'Renderer failed.');
+        break;
+      case 'exportComplete':
+        if (event.path != null) {
+          _logs.info('export', 'Video exported to ${event.path}.');
+          _showMessage('Video exported: ${event.path}');
+        }
+        break;
     }
   }
 
   void _syncScene() {
-    if (_library.error != null && mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(_library.error!)),
-      );
+    final error = _library.error;
+    if (error != null && error != _lastLibraryError) {
+      _lastLibraryError = error;
+      _logs.error('library', error);
+      _showMessage(error);
     }
+
     final signature = [
       _library.selectedModel?.id,
       _library.selectedMotion?.id,
@@ -81,18 +100,26 @@ class _PlayerScreenState extends State<PlayerScreen> {
     ].join(':');
     if (signature == _lastSceneSignature) return;
     _lastSceneSignature = signature;
+
     final model = _library.selectedModel;
     if (model == null) {
-      _player.setIdle('Import and select a PMX model.');
-      _bridge.viewerClear();
+      _player.setIdle('Choose a model from Apply.');
+      _bridge.viewerClear().catchError((Object error) {
+        _logs.error('renderer', error.toString());
+      });
       return;
     }
     if (!model.hasRenderableModel) {
-      _player.setError('Selected model asset has no PMX or PMD file.');
-      _bridge.viewerClear();
+      _player.setError('Selected model has no PMX or PMD file.');
+      _logs.error('apply', '${model.name} has no PMX or PMD file.');
+      _bridge.viewerClear().catchError((Object error) {
+        _logs.error('renderer', error.toString());
+      });
       return;
     }
+
     _player.setLoading('Loading ${model.name}...');
+    _logs.info('apply', 'Loading ${model.name}.');
     _bridge
         .viewerLoadScene(
           model: model,
@@ -103,6 +130,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
         .catchError((Object error) {
       if (!mounted) return;
       _player.setError(error.toString());
+      _logs.error('renderer', error.toString());
     });
   }
 
@@ -112,62 +140,194 @@ class _PlayerScreenState extends State<PlayerScreen> {
       animation: Listenable.merge([_library, _player]),
       builder: (context, _) {
         return Scaffold(
-          body: SafeArea(
-            bottom: false,
-            child: LayoutBuilder(
-              builder: (context, constraints) {
-                final compact = constraints.maxWidth < 720;
-                final railWidth = compact
-                    ? (_railExpanded ? constraints.maxWidth.clamp(280, 340).toDouble() : 72.0)
-                    : (_railExpanded ? 304.0 : 80.0);
-                return Stack(
-                  children: [
-                    const Positioned.fill(child: NativeMmdViewport()),
-                    Positioned(
-                      left: 0,
-                      top: 0,
-                      bottom: 0,
-                      width: railWidth,
-                      child: _LibraryRail(
-                        expanded: _railExpanded,
-                        controller: _library,
-                        onToggle: () => setState(() => _railExpanded = !_railExpanded),
-                      ),
-                    ),
-                    Positioned(
-                      left: railWidth + AppSpacing.x3,
-                      right: compact ? AppSpacing.x3 : 112,
-                      top: AppSpacing.x3,
-                      child: _TopBar(
+          body: LayoutBuilder(
+            builder: (context, constraints) {
+              final safe = MediaQuery.paddingOf(context);
+              final compact = constraints.maxWidth < 560;
+              final bottom = safe.bottom + 16;
+              final top = safe.top + 12;
+
+              return Stack(
+                children: [
+                  const Positioned.fill(child: NativeMmdViewport()),
+                  Positioned(
+                    left: 16,
+                    right: compact ? 84 : 132,
+                    top: top,
+                    child: Align(
+                      alignment: Alignment.topLeft,
+                      child: _SceneHud(
                         model: _library.selectedModel,
                         motion: _library.selectedMotion,
+                        camera: _library.selectedCamera,
                         audio: _library.selectedAudio,
                         player: _player,
                         busy: _library.busy,
                       ),
                     ),
-                    Positioned(
-                      right: AppSpacing.x3,
-                      top: compact ? null : 92,
-                      bottom: compact ? 104 : 116,
-                      width: compact ? 64 : 80,
-                      child: _CameraControls(
-                        player: _player,
-                        onChanged: _pushCamera,
-                      ),
+                  ),
+                  Positioned(
+                    right: 20,
+                    top: top,
+                    child: _RoundToolButton(
+                      tooltip: 'Camera',
+                      icon: Icons.photo_camera_rounded,
+                      onPressed: _showCameraSheet,
                     ),
-                    Positioned(
-                      left: railWidth + AppSpacing.x3,
-                      right: AppSpacing.x3,
-                      bottom: AppSpacing.x3,
-                      child: _TransportBar(
-                        player: _player,
-                        exporting: _exporting,
-                        canExport: _library.selectedModel?.hasRenderableModel ?? false,
-                        onToggle: _togglePlayback,
-                        onSeek: _seek,
-                        onSpeed: _setSpeed,
-                        onExport: () => _showExportSheet(context),
+                  ),
+                  Positioned(
+                    left: 16,
+                    right: compact ? 132 : 164,
+                    bottom: bottom,
+                    child: _TransportBar(
+                      compact: compact,
+                      player: _player,
+                      exporting: _exporting,
+                      canExport: _library.selectedModel?.hasRenderableModel ?? false,
+                      onToggle: _togglePlayback,
+                      onSeek: _seek,
+                      onSpeed: _setSpeed,
+                      onExport: _showExportSheet,
+                    ),
+                  ),
+                  Positioned(
+                    right: 20,
+                    bottom: bottom + 82,
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        _DockButton(
+                          icon: Icons.layers_rounded,
+                          label: 'Apply',
+                          onPressed: _showApplySheet,
+                        ),
+                        const SizedBox(height: 12),
+                        _DockButton(
+                          icon: Icons.receipt_long_rounded,
+                          label: 'Log',
+                          onPressed: _showLogSheet,
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              );
+            },
+          ),
+        );
+      },
+    );
+  }
+
+  Future<void> _togglePlayback() async {
+    if (!_player.loaded) return;
+    if (_player.playing) {
+      await _bridge.viewerPause();
+      _player.markPlaying(false);
+      _logs.info('player', 'Paused.');
+    } else {
+      await _bridge.viewerPlay();
+      _player.markPlaying(true);
+      _logs.info('player', 'Playing.');
+    }
+  }
+
+  Future<void> _seek(double value) async {
+    _player.seek(value);
+    await _bridge.viewerSeek(value);
+  }
+
+  Future<void> _setSpeed(double value) async {
+    _player.setSpeed(value);
+    await _bridge.viewerSetSpeed(value);
+    _logs.info('player', 'Speed set to ${value}x.');
+  }
+
+  Future<void> _pushCamera() async {
+    await _bridge.viewerSetCamera(
+      yaw: _player.yaw,
+      pitch: _player.pitch,
+      distance: _player.distance,
+    );
+  }
+
+  Future<void> _showApplySheet() async {
+    await showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      isScrollControlled: true,
+      backgroundColor: AppColors.surface,
+      builder: (context) {
+        return SafeArea(
+          top: false,
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.fromLTRB(20, 4, 20, 24),
+            child: AnimatedBuilder(
+              animation: _library,
+              builder: (context, _) {
+                return Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const _SheetHeader(title: 'Apply assets'),
+                    const SizedBox(height: 16),
+                    GridView.count(
+                      crossAxisCount: MediaQuery.sizeOf(context).width < 480 ? 2 : 3,
+                      shrinkWrap: true,
+                      physics: const NeverScrollableScrollPhysics(),
+                      mainAxisSpacing: 12,
+                      crossAxisSpacing: 12,
+                      childAspectRatio: 1.32,
+                      children: [
+                        _ApplyTile(
+                          icon: _iconForKind(AssetKind.model),
+                          title: 'Model',
+                          value: _library.selectedModel?.name ?? 'None',
+                          onTap: () => _openPickerFromSheet(context, AssetKind.model),
+                        ),
+                        _ApplyTile(
+                          icon: _iconForKind(AssetKind.motion),
+                          title: 'Motion',
+                          value: _library.selectedMotion?.name ?? 'None',
+                          onTap: () => _openPickerFromSheet(context, AssetKind.motion),
+                        ),
+                        _ApplyTile(
+                          icon: _iconForKind(AssetKind.camera),
+                          title: 'Camera',
+                          value: _library.selectedCamera?.name ?? 'None',
+                          onTap: () => _openPickerFromSheet(context, AssetKind.camera),
+                        ),
+                        _ApplyTile(
+                          icon: _iconForKind(AssetKind.audio),
+                          title: 'Audio',
+                          value: _library.selectedAudio?.name ?? 'None',
+                          onTap: () => _openPickerFromSheet(context, AssetKind.audio),
+                        ),
+                        _ApplyTile(
+                          icon: _iconForKind(AssetKind.face),
+                          title: 'Face',
+                          value: _library.selectedFace?.name ?? 'None',
+                          onTap: () => _openPickerFromSheet(context, AssetKind.face),
+                        ),
+                        _ApplyTile(
+                          icon: Icons.inventory_2_rounded,
+                          title: 'Library',
+                          value: '${_library.assets.length} assets',
+                          onTap: () => _openLibraryFromSheet(context),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    SizedBox(
+                      width: double.infinity,
+                      child: OutlinedButton.icon(
+                        onPressed: () {
+                          _library.clearScene();
+                          _logs.info('apply', 'Scene bindings cleared.');
+                          Navigator.of(context).pop();
+                        },
+                        icon: const Icon(Icons.layers_clear_rounded),
+                        label: const Text('Clear current scene'),
                       ),
                     ),
                   ],
@@ -180,36 +340,461 @@ class _PlayerScreenState extends State<PlayerScreen> {
     );
   }
 
-  Future<void> _togglePlayback() async {
-    if (!_player.loaded) return;
-    if (_player.playing) {
-      await _bridge.viewerPause();
-      _player.markPlaying(false);
-    } else {
-      await _bridge.viewerPlay();
-      _player.markPlaying(true);
-    }
+  void _openPickerFromSheet(BuildContext sheetContext, AssetKind kind) {
+    Navigator.of(sheetContext).pop();
+    Future.delayed(const Duration(milliseconds: 160), () {
+      if (mounted) _showAssetPicker(kind);
+    });
   }
 
-  Future<void> _seek(double value) async {
-    _player.seek(value);
-    await _bridge.viewerSeek(value);
+  void _openLibraryFromSheet(BuildContext sheetContext) {
+    Navigator.of(sheetContext).pop();
+    Future.delayed(const Duration(milliseconds: 160), () {
+      if (mounted) _showLibraryManager();
+    });
   }
 
-  Future<void> _setSpeed(double value) async {
-    _player.setSpeed(value);
-    await _bridge.viewerSetSpeed(value);
-  }
-
-  Future<void> _pushCamera() async {
-    await _bridge.viewerSetCamera(
-      yaw: _player.yaw,
-      pitch: _player.pitch,
-      distance: _player.distance,
+  Future<void> _showAssetPicker(AssetKind kind) async {
+    await showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      isScrollControlled: true,
+      backgroundColor: AppColors.surface,
+      builder: (context) {
+        return FractionallySizedBox(
+          heightFactor: 0.82,
+          child: SafeArea(
+            top: false,
+            child: AnimatedBuilder(
+              animation: _library,
+              builder: (context, _) {
+                final assets = _library.byKind(kind);
+                return Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 4, 20, 20),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      _SheetHeader(
+                        title: 'Apply ${kind.label}',
+                        action: FilledButton.icon(
+                          onPressed: _library.busy ? null : () => _import(kind),
+                          icon: _library.busy
+                              ? const SizedBox.square(
+                                  dimension: 16,
+                                  child: CircularProgressIndicator(strokeWidth: 2),
+                                )
+                              : const Icon(Icons.add_rounded),
+                          label: const Text('Import'),
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      Expanded(
+                        child: assets.isEmpty
+                            ? _EmptyAssets(kind: kind, onImport: () => _import(kind))
+                            : ListView.separated(
+                                itemCount: assets.length,
+                                separatorBuilder: (context, index) => const SizedBox(height: 10),
+                                itemBuilder: (context, index) {
+                                  final asset = assets[index];
+                                  return _AssetRow(
+                                    asset: asset,
+                                    selected: _isSelected(asset),
+                                    onTap: () {
+                                      _applyAsset(asset);
+                                      Navigator.of(context).pop();
+                                    },
+                                    onEdit: () => _showAssetEditor(asset),
+                                  );
+                                },
+                              ),
+                      ),
+                    ],
+                  ),
+                );
+              },
+            ),
+          ),
+        );
+      },
     );
   }
 
-  Future<void> _showExportSheet(BuildContext context) async {
+  Future<void> _showLibraryManager() async {
+    await showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      isScrollControlled: true,
+      backgroundColor: AppColors.surface,
+      builder: (context) {
+        return FractionallySizedBox(
+          heightFactor: 0.9,
+          child: SafeArea(
+            top: false,
+            child: AnimatedBuilder(
+              animation: _library,
+              builder: (context, _) {
+                return DefaultTabController(
+                  length: 5,
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(20, 4, 20, 20),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        _SheetHeader(
+                          title: 'Library',
+                          action: IconButton.filledTonal(
+                            tooltip: 'Reload library',
+                            onPressed: _library.busy ? null : () => _library.load(),
+                            icon: const Icon(Icons.refresh_rounded),
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        const TabBar(
+                          isScrollable: true,
+                          tabs: [
+                            Tab(text: 'Models'),
+                            Tab(text: 'Motion'),
+                            Tab(text: 'Camera'),
+                            Tab(text: 'Audio'),
+                            Tab(text: 'Face'),
+                          ],
+                        ),
+                        const SizedBox(height: 12),
+                        Expanded(
+                          child: TabBarView(
+                            children: [
+                              _LibraryKindTab(
+                                kind: AssetKind.model,
+                                controller: _library,
+                                selected: _isSelected,
+                                onImport: () => _import(AssetKind.model),
+                                onApply: _applyAsset,
+                                onEdit: _showAssetEditor,
+                              ),
+                              _LibraryKindTab(
+                                kind: AssetKind.motion,
+                                controller: _library,
+                                selected: _isSelected,
+                                onImport: () => _import(AssetKind.motion),
+                                onApply: _applyAsset,
+                                onEdit: _showAssetEditor,
+                              ),
+                              _LibraryKindTab(
+                                kind: AssetKind.camera,
+                                controller: _library,
+                                selected: _isSelected,
+                                onImport: () => _import(AssetKind.camera),
+                                onApply: _applyAsset,
+                                onEdit: _showAssetEditor,
+                              ),
+                              _LibraryKindTab(
+                                kind: AssetKind.audio,
+                                controller: _library,
+                                selected: _isSelected,
+                                onImport: () => _import(AssetKind.audio),
+                                onApply: _applyAsset,
+                                onEdit: _showAssetEditor,
+                              ),
+                              _LibraryKindTab(
+                                kind: AssetKind.face,
+                                controller: _library,
+                                selected: _isSelected,
+                                onImport: () => _import(AssetKind.face),
+                                onApply: _applyAsset,
+                                onEdit: _showAssetEditor,
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                );
+              },
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Future<void> _showAssetEditor(LibraryAsset initialAsset) async {
+    final nameController = TextEditingController(text: initialAsset.name);
+    try {
+      await showModalBottomSheet<void>(
+        context: context,
+        showDragHandle: true,
+        isScrollControlled: true,
+        backgroundColor: AppColors.surface,
+        builder: (context) {
+          return SafeArea(
+            top: false,
+            child: AnimatedBuilder(
+              animation: _library,
+              builder: (context, _) {
+                final asset = _library.assets.firstWhere(
+                  (item) => item.id == initialAsset.id,
+                  orElse: () => initialAsset,
+                );
+                return Padding(
+                  padding: EdgeInsets.fromLTRB(
+                    20,
+                    4,
+                    20,
+                    MediaQuery.viewInsetsOf(context).bottom + 20,
+                  ),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      _SheetHeader(title: 'Edit asset'),
+                      const SizedBox(height: 12),
+                      TextField(
+                        controller: nameController,
+                        decoration: const InputDecoration(
+                          labelText: 'Name',
+                          border: OutlineInputBorder(),
+                        ),
+                        textInputAction: TextInputAction.done,
+                      ),
+                      const SizedBox(height: 12),
+                      _DetailLine(label: 'Kind', value: asset.kind.label),
+                      _DetailLine(label: 'Files', value: '${asset.fileCount} files'),
+                      _DetailLine(label: 'Size', value: _formatBytes(asset.totalBytes)),
+                      _DetailLine(label: 'Source', value: asset.sourceName),
+                      _DetailLine(label: 'Detected', value: _assetCapability(asset)),
+                      const SizedBox(height: 16),
+                      Wrap(
+                        spacing: 10,
+                        runSpacing: 10,
+                        children: [
+                          FilledButton.icon(
+                            onPressed: _library.busy
+                                ? null
+                                : () async {
+                                    final updated = await _library.rename(
+                                      asset,
+                                      nameController.text,
+                                    );
+                                    if (updated != null) {
+                                      _logs.info('library', 'Renamed ${asset.name} to ${updated.name}.');
+                                    }
+                                  },
+                            icon: const Icon(Icons.save_rounded),
+                            label: const Text('Save'),
+                          ),
+                          OutlinedButton.icon(
+                            onPressed: _library.busy
+                                ? null
+                                : () async {
+                                    final updated = await _library.rescan(asset);
+                                    if (updated != null) {
+                                      _logs.info('library', 'Rescanned ${updated.name}.');
+                                    }
+                                  },
+                            icon: const Icon(Icons.manage_search_rounded),
+                            label: const Text('Rescan'),
+                          ),
+                          OutlinedButton.icon(
+                            onPressed: _library.busy
+                                ? null
+                                : () async {
+                                    final confirmed = await _confirmDelete(asset);
+                                    if (!confirmed || !mounted) return;
+                                    await _library.delete(asset);
+                                    _logs.warning('library', 'Deleted ${asset.name}.');
+                                    if (mounted) Navigator.of(context).pop();
+                                  },
+                            icon: const Icon(Icons.delete_outline_rounded),
+                            label: const Text('Delete'),
+                            style: OutlinedButton.styleFrom(
+                              foregroundColor: AppColors.danger,
+                              side: const BorderSide(color: AppColors.danger),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                );
+              },
+            ),
+          );
+        },
+      );
+    } finally {
+      nameController.dispose();
+    }
+  }
+
+  Future<bool> _confirmDelete(LibraryAsset asset) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('Delete asset'),
+          content: Text('Delete "${asset.name}" from the internal library?'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(context).pop(true),
+              style: FilledButton.styleFrom(backgroundColor: AppColors.danger),
+              child: const Text('Delete'),
+            ),
+          ],
+        );
+      },
+    );
+    return confirmed ?? false;
+  }
+
+  Future<void> _showLogSheet() async {
+    await showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      isScrollControlled: true,
+      backgroundColor: AppColors.surface,
+      builder: (context) {
+        return FractionallySizedBox(
+          heightFactor: 0.72,
+          child: SafeArea(
+            top: false,
+            child: AnimatedBuilder(
+              animation: _logs,
+              builder: (context, _) {
+                final entries = _logs.entries;
+                return Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 4, 20, 20),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      _SheetHeader(
+                        title: 'Recent log',
+                        action: Wrap(
+                          spacing: 8,
+                          children: [
+                            IconButton.filledTonal(
+                              tooltip: 'Copy log',
+                              onPressed: () async {
+                                await Clipboard.setData(ClipboardData(text: _logs.dump()));
+                                _showMessage('Log copied.');
+                              },
+                              icon: const Icon(Icons.copy_rounded),
+                            ),
+                            IconButton.filledTonal(
+                              tooltip: 'Clear log',
+                              onPressed: _logs.clear,
+                              icon: const Icon(Icons.clear_all_rounded),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      Expanded(
+                        child: entries.isEmpty
+                            ? const Center(
+                                child: Text(
+                                  'No log entries.',
+                                  style: TextStyle(color: AppColors.textMuted),
+                                ),
+                              )
+                            : ListView.separated(
+                                itemCount: entries.length,
+                                separatorBuilder: (context, index) => const Divider(
+                                  color: AppColors.line,
+                                  height: 18,
+                                ),
+                                itemBuilder: (context, index) {
+                                  final entry = entries[index];
+                                  return _LogLine(entry: entry);
+                                },
+                              ),
+                      ),
+                    ],
+                  ),
+                );
+              },
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Future<void> _showCameraSheet() async {
+    await showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      backgroundColor: AppColors.surface,
+      builder: (context) {
+        return SafeArea(
+          top: false,
+          child: AnimatedBuilder(
+            animation: _player,
+            builder: (context, _) {
+              return Padding(
+                padding: const EdgeInsets.fromLTRB(20, 4, 20, 24),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    _SheetHeader(
+                      title: 'Camera',
+                      action: IconButton.filledTonal(
+                        tooltip: 'Reset camera',
+                        onPressed: () {
+                          _player.resetCamera();
+                          _pushCamera();
+                          _logs.info('camera', 'Camera reset.');
+                        },
+                        icon: const Icon(Icons.center_focus_strong_rounded),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    _CameraSlider(
+                      label: 'Yaw',
+                      value: _player.yaw,
+                      min: -180,
+                      max: 180,
+                      onChanged: (value) {
+                        _player.orbit(yaw: value);
+                        _pushCamera();
+                      },
+                    ),
+                    _CameraSlider(
+                      label: 'Pitch',
+                      value: _player.pitch,
+                      min: -80,
+                      max: 80,
+                      onChanged: (value) {
+                        _player.orbit(pitch: value);
+                        _pushCamera();
+                      },
+                    ),
+                    _CameraSlider(
+                      label: 'Distance',
+                      value: _player.distance,
+                      min: 1.4,
+                      max: 80,
+                      onChanged: (value) {
+                        _player.orbit(distance: value);
+                        _pushCamera();
+                      },
+                    ),
+                  ],
+                ),
+              );
+            },
+          ),
+        );
+      },
+    );
+  }
+
+  Future<void> _showExportSheet() async {
     final model = _library.selectedModel;
     if (model == null || !model.hasRenderableModel) return;
     var settings = ExportSettings(
@@ -233,10 +818,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Text(
-                      'Export video',
-                      style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700),
-                    ),
+                    const _SheetHeader(title: 'Export video'),
                     const SizedBox(height: 12),
                     _SegmentedExportRow(
                       label: 'Size',
@@ -283,6 +865,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
                                 final messenger = ScaffoldMessenger.of(this.context);
                                 final navigator = Navigator.of(context);
                                 setState(() => _exporting = true);
+                                _logs.info('export', 'Started ${settings.width}x${settings.height} ${settings.fps}fps.');
                                 try {
                                   final job = await _export.exportVideo(
                                     settings: settings,
@@ -291,12 +874,14 @@ class _PlayerScreenState extends State<PlayerScreen> {
                                     camera: _library.selectedCamera,
                                     audio: _library.selectedAudio,
                                   );
-                                  navigator.pop();
+                                  if (navigator.canPop()) navigator.pop();
+                                  _logs.info('export', 'Video exported to ${job.path}.');
                                   messenger.showSnackBar(
                                     SnackBar(content: Text('Video exported: ${job.path}')),
                                   );
                                 } catch (error) {
-                                  setState(() => _exporting = false);
+                                  if (mounted) setState(() => _exporting = false);
+                                  _logs.error('export', error.toString());
                                   messenger.showSnackBar(
                                     SnackBar(content: Text(error.toString())),
                                   );
@@ -320,6 +905,37 @@ class _PlayerScreenState extends State<PlayerScreen> {
       },
     );
   }
+
+  Future<void> _import(AssetKind kind) async {
+    final asset = await _library.importKind(kind);
+    if (asset != null) {
+      _logs.info('library', 'Imported ${asset.name}.');
+      if (kind == AssetKind.face) {
+        _logs.warning('apply', 'Face assets are stored and selectable; renderer morph playback is reserved.');
+      }
+    }
+  }
+
+  void _applyAsset(LibraryAsset asset) {
+    _library.select(asset);
+    _logs.info('apply', 'Applied ${asset.kind.name}: ${asset.name}.');
+    if (asset.kind == AssetKind.face) {
+      _logs.warning('apply', 'Face asset selected; renderer morph playback is reserved.');
+    }
+  }
+
+  bool _isSelected(LibraryAsset asset) {
+    return _library.selectedModel?.id == asset.id ||
+        _library.selectedMotion?.id == asset.id ||
+        _library.selectedCamera?.id == asset.id ||
+        _library.selectedAudio?.id == asset.id ||
+        _library.selectedFace?.id == asset.id;
+  }
+
+  void _showMessage(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+  }
 }
 
 class NativeMmdViewport extends StatelessWidget {
@@ -340,10 +956,11 @@ class NativeMmdViewport extends StatelessWidget {
   }
 }
 
-class _TopBar extends StatelessWidget {
-  const _TopBar({
+class _SceneHud extends StatelessWidget {
+  const _SceneHud({
     required this.model,
     required this.motion,
+    required this.camera,
     required this.audio,
     required this.player,
     required this.busy,
@@ -351,6 +968,7 @@ class _TopBar extends StatelessWidget {
 
   final LibraryAsset? model;
   final LibraryAsset? motion;
+  final LibraryAsset? camera;
   final LibraryAsset? audio;
   final PlayerController player;
   final bool busy;
@@ -359,383 +977,74 @@ class _TopBar extends StatelessWidget {
   Widget build(BuildContext context) {
     final status = player.error ??
         player.message ??
-        (player.loaded ? 'Renderer ready' : 'Renderer waiting');
-    return _Panel(
-      child: Row(
-        children: [
-          const Icon(Icons.view_in_ar_rounded, size: 22),
-          const SizedBox(width: 8),
-          const Text(
-            'Danxe',
-            style: TextStyle(fontWeight: FontWeight.w800, fontSize: 16),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: [
-                _StatusChip(icon: Icons.person_rounded, label: model?.name ?? 'No model'),
-                _StatusChip(icon: Icons.timeline_rounded, label: motion?.name ?? 'No motion'),
-                _StatusChip(icon: Icons.graphic_eq_rounded, label: audio?.name ?? 'No audio'),
-                _StatusChip(icon: Icons.info_outline_rounded, label: status),
-              ],
-            ),
-          ),
-          if (busy || player.loading)
-            const SizedBox.square(
-              dimension: 22,
-              child: CircularProgressIndicator(strokeWidth: 2),
-            )
-          else
-            Icon(
-              player.loaded ? Icons.check_circle_rounded : Icons.radio_button_unchecked_rounded,
-              size: 22,
-            ),
-        ],
-      ),
-    );
-  }
-}
-
-class _StatusChip extends StatelessWidget {
-  const _StatusChip({required this.icon, required this.label});
-
-  final IconData icon;
-  final String label;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      constraints: const BoxConstraints(minHeight: 32, maxWidth: 220),
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-      decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.06),
-        borderRadius: BorderRadius.circular(8),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(icon, size: 16, color: AppColors.textMuted),
-          const SizedBox(width: 6),
-          Flexible(
-            child: Text(
-              label,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(fontSize: 12, color: AppColors.textMuted),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _LibraryRail extends StatelessWidget {
-  const _LibraryRail({
-    required this.expanded,
-    required this.controller,
-    required this.onToggle,
-  });
-
-  final bool expanded;
-  final ResourceLibraryController controller;
-  final VoidCallback onToggle;
-
-  @override
-  Widget build(BuildContext context) {
-    return AnimatedContainer(
-      duration: const Duration(milliseconds: 220),
-      curve: Curves.easeOutCubic,
-      decoration: BoxDecoration(
-        color: AppColors.surface.withOpacity(0.94),
-        border: const Border(right: BorderSide(color: AppColors.line)),
-      ),
-      child: SafeArea(
-        right: false,
-        bottom: true,
-        child: Column(
+        (player.loaded ? 'Ready' : 'Waiting');
+    return ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: 560),
+      child: _Panel(
+        padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
           children: [
-            Padding(
-              padding: const EdgeInsets.all(12),
-              child: Row(
+            const Icon(Icons.view_in_ar_rounded, size: 22),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  IconButton(
-                    tooltip: expanded ? 'Collapse library' : 'Open library',
-                    onPressed: onToggle,
-                    icon: Icon(expanded ? Icons.menu_open_rounded : Icons.menu_rounded),
+                  Text(
+                    model?.name ?? 'No model applied',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 15),
                   ),
-                  if (expanded) ...[
-                    const SizedBox(width: 8),
-                    const Expanded(
-                      child: Text(
-                        'Library',
-                        style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
-                      ),
-                    ),
-                  ],
+                  const SizedBox(height: 3),
+                  Text(
+                    _sceneSubtitle(motion, camera, audio, status),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontSize: 12, color: AppColors.textMuted),
+                  ),
                 ],
               ),
             ),
-            Expanded(
-              child: expanded
-                  ? _ExpandedLibrary(controller: controller)
-                  : _CollapsedLibrary(controller: controller),
-            ),
+            const SizedBox(width: 10),
+            if (busy || player.loading)
+              const SizedBox.square(
+                dimension: 20,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              )
+            else
+              Icon(
+                player.loaded ? Icons.check_circle_rounded : Icons.radio_button_unchecked_rounded,
+                size: 22,
+                color: player.loaded ? AppColors.success : AppColors.textMuted,
+              ),
           ],
         ),
       ),
     );
   }
-}
 
-class _CollapsedLibrary extends StatelessWidget {
-  const _CollapsedLibrary({required this.controller});
-
-  final ResourceLibraryController controller;
-
-  @override
-  Widget build(BuildContext context) {
-    return ListView(
-      padding: const EdgeInsets.symmetric(horizontal: 10),
-      children: AssetKind.values.take(5).map((kind) {
-        return Padding(
-          padding: const EdgeInsets.only(bottom: 8),
-          child: IconButton.filledTonal(
-            tooltip: 'Import ${kind.label}',
-            onPressed: () => controller.importKind(kind),
-            icon: Icon(_iconForKind(kind)),
-          ),
-        );
-      }).toList(),
-    );
-  }
-}
-
-class _ExpandedLibrary extends StatelessWidget {
-  const _ExpandedLibrary({required this.controller});
-
-  final ResourceLibraryController controller;
-
-  @override
-  Widget build(BuildContext context) {
-    return ListView(
-      padding: const EdgeInsets.fromLTRB(12, 0, 12, 24),
-      children: [
-        Wrap(
-          spacing: 8,
-          runSpacing: 8,
-          children: AssetKind.values.take(5).map((kind) {
-            return SizedBox(
-              height: 48,
-              child: FilledButton.tonalIcon(
-                onPressed: controller.busy ? null : () => controller.importKind(kind),
-                icon: Icon(_iconForKind(kind), size: 18),
-                label: Text(kind.name),
-              ),
-            );
-          }).toList(),
-        ),
-        const SizedBox(height: 16),
-        for (final kind in AssetKind.values.take(5)) ...[
-          _SectionHeader(kind: kind, count: controller.byKind(kind).length),
-          const SizedBox(height: 8),
-          if (controller.byKind(kind).isEmpty)
-            const _EmptyLibraryRow()
-          else
-            ...controller.byKind(kind).map(
-                  (asset) => _AssetTile(
-                    asset: asset,
-                    selected: _isSelected(controller, asset),
-                    onTap: () => controller.select(asset),
-                    onDelete: () => controller.delete(asset),
-                  ),
-                ),
-          const SizedBox(height: 12),
-        ],
-      ],
-    );
-  }
-
-  bool _isSelected(ResourceLibraryController controller, LibraryAsset asset) {
-    return controller.selectedModel?.id == asset.id ||
-        controller.selectedMotion?.id == asset.id ||
-        controller.selectedCamera?.id == asset.id ||
-        controller.selectedAudio?.id == asset.id;
-  }
-}
-
-class _SectionHeader extends StatelessWidget {
-  const _SectionHeader({required this.kind, required this.count});
-
-  final AssetKind kind;
-  final int count;
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      children: [
-        Icon(_iconForKind(kind), size: 18, color: AppColors.textMuted),
-        const SizedBox(width: 8),
-        Expanded(child: Text(kind.label, style: const TextStyle(fontWeight: FontWeight.w700))),
-        Text('$count', style: const TextStyle(color: AppColors.textMuted)),
-      ],
-    );
-  }
-}
-
-class _EmptyLibraryRow extends StatelessWidget {
-  const _EmptyLibraryRow();
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      height: 48,
-      alignment: Alignment.centerLeft,
-      padding: const EdgeInsets.symmetric(horizontal: 12),
-      decoration: BoxDecoration(
-        border: Border.all(color: AppColors.line),
-        borderRadius: BorderRadius.circular(8),
-      ),
-      child: const Text('Empty', style: TextStyle(color: AppColors.textMuted)),
-    );
-  }
-}
-
-class _AssetTile extends StatelessWidget {
-  const _AssetTile({
-    required this.asset,
-    required this.selected,
-    required this.onTap,
-    required this.onDelete,
-  });
-
-  final LibraryAsset asset;
-  final bool selected;
-  final VoidCallback onTap;
-  final VoidCallback onDelete;
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 8),
-      child: Material(
-        color: selected ? AppColors.primary.withOpacity(0.28) : Colors.white.withOpacity(0.05),
-        borderRadius: BorderRadius.circular(8),
-        child: InkWell(
-          borderRadius: BorderRadius.circular(8),
-          onTap: onTap,
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(12, 10, 6, 10),
-            child: Row(
-              children: [
-                Icon(_iconForKind(asset.kind), size: 22),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        asset.name,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(fontWeight: FontWeight.w600),
-                      ),
-                      const SizedBox(height: 2),
-                      Text(
-                        '${asset.fileCount} files  ${_formatBytes(asset.totalBytes)}',
-                        style: const TextStyle(fontSize: 12, color: AppColors.textMuted),
-                      ),
-                    ],
-                  ),
-                ),
-                IconButton(
-                  tooltip: 'Delete',
-                  onPressed: onDelete,
-                  icon: const Icon(Icons.delete_outline_rounded, size: 20),
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _CameraControls extends StatelessWidget {
-  const _CameraControls({required this.player, required this.onChanged});
-
-  final PlayerController player;
-  final Future<void> Function() onChanged;
-
-  @override
-  Widget build(BuildContext context) {
-    return _Panel(
-      padding: const EdgeInsets.symmetric(vertical: 8),
-      child: Column(
-        children: [
-          IconButton(
-            tooltip: 'Reset camera',
-            onPressed: () {
-              player.resetCamera();
-              onChanged();
-            },
-            icon: const Icon(Icons.center_focus_strong_rounded),
-          ),
-          const Divider(color: AppColors.line),
-          Expanded(
-            child: RotatedBox(
-              quarterTurns: 3,
-              child: Slider(
-                min: -180,
-                max: 180,
-                value: player.yaw,
-                onChanged: (value) {
-                  player.orbit(yaw: value);
-                  onChanged();
-                },
-              ),
-            ),
-          ),
-          Expanded(
-            child: RotatedBox(
-              quarterTurns: 3,
-              child: Slider(
-                min: 1.4,
-                max: 80,
-                value: player.distance,
-                onChanged: (value) {
-                  player.orbit(distance: value);
-                  onChanged();
-                },
-              ),
-            ),
-          ),
-          IconButton(
-            tooltip: 'Pitch up',
-            onPressed: () {
-              player.orbit(pitch: player.pitch + 4);
-              onChanged();
-            },
-            icon: const Icon(Icons.keyboard_arrow_up_rounded),
-          ),
-          IconButton(
-            tooltip: 'Pitch down',
-            onPressed: () {
-              player.orbit(pitch: player.pitch - 4);
-              onChanged();
-            },
-            icon: const Icon(Icons.keyboard_arrow_down_rounded),
-          ),
-        ],
-      ),
-    );
+  String _sceneSubtitle(
+    LibraryAsset? motion,
+    LibraryAsset? camera,
+    LibraryAsset? audio,
+    String status,
+  ) {
+    final parts = <String>[
+      status,
+      if (motion != null) 'Motion: ${motion.name}',
+      if (camera != null) 'Camera: ${camera.name}',
+      if (audio != null) 'Audio: ${audio.name}',
+    ];
+    return parts.join('  /  ');
   }
 }
 
 class _TransportBar extends StatelessWidget {
   const _TransportBar({
+    required this.compact,
     required this.player,
     required this.exporting,
     required this.canExport,
@@ -745,6 +1054,7 @@ class _TransportBar extends StatelessWidget {
     required this.onExport,
   });
 
+  final bool compact;
   final PlayerController player;
   final bool exporting;
   final bool canExport;
@@ -756,7 +1066,7 @@ class _TransportBar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return _Panel(
-      padding: const EdgeInsets.fromLTRB(8, 8, 12, 8),
+      padding: const EdgeInsets.fromLTRB(8, 8, 8, 8),
       child: Row(
         children: [
           IconButton.filled(
@@ -765,11 +1075,19 @@ class _TransportBar extends StatelessWidget {
             icon: Icon(player.playing ? Icons.pause_rounded : Icons.play_arrow_rounded),
           ),
           const SizedBox(width: 8),
-          Text(
-            player.timeLabel,
-            style: const TextStyle(fontFeatures: [FontFeature.tabularFigures()]),
+          SizedBox(
+            width: compact ? 58 : 96,
+            child: Text(
+              player.timeLabel,
+              maxLines: 1,
+              overflow: TextOverflow.fade,
+              softWrap: false,
+              style: const TextStyle(
+                fontSize: 12,
+                fontFeatures: [FontFeature.tabularFigures()],
+              ),
+            ),
           ),
-          const SizedBox(width: 10),
           Expanded(
             child: Slider(
               min: 0,
@@ -778,28 +1096,13 @@ class _TransportBar extends StatelessWidget {
               onChanged: player.loaded ? onSeek : null,
             ),
           ),
+          if (!compact) ...[
+            const SizedBox(width: 8),
+            _SpeedMenu(speed: player.speed, enabled: player.loaded, onSelected: onSpeed),
+          ],
           const SizedBox(width: 8),
-          SizedBox(
-            width: 72,
-            child: DropdownButton<double>(
-              isExpanded: true,
-              value: player.speed,
-              underline: const SizedBox.shrink(),
-              items: const [
-                DropdownMenuItem(value: 0.5, child: Text('0.5x')),
-                DropdownMenuItem(value: 1.0, child: Text('1x')),
-                DropdownMenuItem(value: 1.5, child: Text('1.5x')),
-                DropdownMenuItem(value: 2.0, child: Text('2x')),
-              ],
-              onChanged: player.loaded
-                  ? (value) {
-                      if (value != null) onSpeed(value);
-                    }
-                  : null,
-            ),
-          ),
-          const SizedBox(width: 8),
-          FilledButton.icon(
+          IconButton.filledTonal(
+            tooltip: 'Export',
             onPressed: canExport && player.loaded && !exporting ? onExport : null,
             icon: exporting
                 ? const SizedBox.square(
@@ -807,10 +1110,410 @@ class _TransportBar extends StatelessWidget {
                     child: CircularProgressIndicator(strokeWidth: 2),
                   )
                 : const Icon(Icons.movie_creation_rounded),
-            label: Text(exporting ? 'Recording' : 'Export'),
           ),
         ],
       ),
+    );
+  }
+}
+
+class _SpeedMenu extends StatelessWidget {
+  const _SpeedMenu({
+    required this.speed,
+    required this.enabled,
+    required this.onSelected,
+  });
+
+  final double speed;
+  final bool enabled;
+  final ValueChanged<double> onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    return PopupMenuButton<double>(
+      enabled: enabled,
+      initialValue: speed,
+      onSelected: onSelected,
+      itemBuilder: (context) => const [
+        PopupMenuItem(value: 0.5, child: Text('0.5x')),
+        PopupMenuItem(value: 1.0, child: Text('1x')),
+        PopupMenuItem(value: 1.5, child: Text('1.5x')),
+        PopupMenuItem(value: 2.0, child: Text('2x')),
+      ],
+      child: SizedBox(
+        width: 52,
+        height: 48,
+        child: Center(
+          child: Text(
+            '${speed.toStringAsFixed(speed == speed.roundToDouble() ? 0 : 1)}x',
+            style: const TextStyle(fontWeight: FontWeight.w700),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _DockButton extends StatelessWidget {
+  const _DockButton({
+    required this.icon,
+    required this.label,
+    required this.onPressed,
+  });
+
+  final IconData icon;
+  final String label;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: AppColors.primary,
+      borderRadius: BorderRadius.circular(8),
+      elevation: 12,
+      shadowColor: Colors.black.withOpacity(0.38),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(8),
+        onTap: onPressed,
+        child: SizedBox(
+          width: 104,
+          height: 52,
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(icon, size: 20),
+              const SizedBox(width: 8),
+              Text(label, style: const TextStyle(fontWeight: FontWeight.w800)),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _RoundToolButton extends StatelessWidget {
+  const _RoundToolButton({
+    required this.tooltip,
+    required this.icon,
+    required this.onPressed,
+  });
+
+  final String tooltip;
+  final IconData icon;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    return _Panel(
+      padding: EdgeInsets.zero,
+      child: IconButton(
+        tooltip: tooltip,
+        onPressed: onPressed,
+        icon: Icon(icon),
+      ),
+    );
+  }
+}
+
+class _ApplyTile extends StatelessWidget {
+  const _ApplyTile({
+    required this.icon,
+    required this.title,
+    required this.value,
+    required this.onTap,
+  });
+
+  final IconData icon;
+  final String title;
+  final String value;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: AppColors.surfaceHigh,
+      borderRadius: BorderRadius.circular(8),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(8),
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(icon, size: 24),
+              const Spacer(),
+              Text(title, style: const TextStyle(fontWeight: FontWeight.w800)),
+              const SizedBox(height: 3),
+              Text(
+                value,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontSize: 12, color: AppColors.textMuted),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _AssetRow extends StatelessWidget {
+  const _AssetRow({
+    required this.asset,
+    required this.selected,
+    required this.onTap,
+    required this.onEdit,
+  });
+
+  final LibraryAsset asset;
+  final bool selected;
+  final VoidCallback onTap;
+  final VoidCallback onEdit;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: selected ? AppColors.primary.withOpacity(0.24) : AppColors.surfaceHigh,
+      borderRadius: BorderRadius.circular(8),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(8),
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(12, 10, 6, 10),
+          child: Row(
+            children: [
+              Icon(_iconForKind(asset.kind), size: 24),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      asset.name,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontWeight: FontWeight.w800),
+                    ),
+                    const SizedBox(height: 3),
+                    Text(
+                      '${_assetCapability(asset)}  /  ${asset.fileCount} files  /  ${_formatBytes(asset.totalBytes)}',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontSize: 12, color: AppColors.textMuted),
+                    ),
+                  ],
+                ),
+              ),
+              IconButton(
+                tooltip: 'Edit',
+                onPressed: onEdit,
+                icon: const Icon(Icons.tune_rounded),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _LibraryKindTab extends StatelessWidget {
+  const _LibraryKindTab({
+    required this.kind,
+    required this.controller,
+    required this.selected,
+    required this.onImport,
+    required this.onApply,
+    required this.onEdit,
+  });
+
+  final AssetKind kind;
+  final ResourceLibraryController controller;
+  final bool Function(LibraryAsset asset) selected;
+  final VoidCallback onImport;
+  final ValueChanged<LibraryAsset> onApply;
+  final ValueChanged<LibraryAsset> onEdit;
+
+  @override
+  Widget build(BuildContext context) {
+    final assets = controller.byKind(kind);
+    return Column(
+      children: [
+        SizedBox(
+          width: double.infinity,
+          child: FilledButton.icon(
+            onPressed: controller.busy ? null : onImport,
+            icon: const Icon(Icons.add_rounded),
+            label: Text('Import ${kind.label}'),
+          ),
+        ),
+        const SizedBox(height: 12),
+        Expanded(
+          child: assets.isEmpty
+              ? _EmptyAssets(kind: kind, onImport: onImport)
+              : ListView.separated(
+                  itemCount: assets.length,
+                  separatorBuilder: (context, index) => const SizedBox(height: 10),
+                  itemBuilder: (context, index) {
+                    final asset = assets[index];
+                    return _AssetRow(
+                      asset: asset,
+                      selected: selected(asset),
+                      onTap: () => onApply(asset),
+                      onEdit: () => onEdit(asset),
+                    );
+                  },
+                ),
+        ),
+      ],
+    );
+  }
+}
+
+class _EmptyAssets extends StatelessWidget {
+  const _EmptyAssets({required this.kind, required this.onImport});
+
+  final AssetKind kind;
+  final VoidCallback onImport;
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 280),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(_iconForKind(kind), size: 42, color: AppColors.textMuted),
+            const SizedBox(height: 12),
+            Text(
+              'No imported ${kind.label.toLowerCase()}.',
+              textAlign: TextAlign.center,
+              style: const TextStyle(color: AppColors.textMuted),
+            ),
+            const SizedBox(height: 14),
+            FilledButton.icon(
+              onPressed: onImport,
+              icon: const Icon(Icons.add_rounded),
+              label: const Text('Import'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _SheetHeader extends StatelessWidget {
+  const _SheetHeader({required this.title, this.action});
+
+  final String title;
+  final Widget? action;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        Expanded(
+          child: Text(
+            title,
+            style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w800),
+          ),
+        ),
+        if (action != null) action!,
+      ],
+    );
+  }
+}
+
+class _DetailLine extends StatelessWidget {
+  const _DetailLine({required this.label, required this.value});
+
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 72,
+            child: Text(label, style: const TextStyle(color: AppColors.textMuted)),
+          ),
+          Expanded(child: Text(value)),
+        ],
+      ),
+    );
+  }
+}
+
+class _LogLine extends StatelessWidget {
+  const _LogLine({required this.entry});
+
+  final AppLogEntry entry;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = switch (entry.level) {
+      AppLogLevel.info => AppColors.textMuted,
+      AppLogLevel.warning => Colors.amberAccent,
+      AppLogLevel.error => AppColors.danger,
+    };
+    return SelectableText(
+      entry.line,
+      style: TextStyle(
+        color: color,
+        fontFamily: 'monospace',
+        fontSize: 12,
+        height: 1.45,
+      ),
+    );
+  }
+}
+
+class _CameraSlider extends StatelessWidget {
+  const _CameraSlider({
+    required this.label,
+    required this.value,
+    required this.min,
+    required this.max,
+    required this.onChanged,
+  });
+
+  final String label;
+  final double value;
+  final double min;
+  final double max;
+  final ValueChanged<double> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        SizedBox(width: 72, child: Text(label)),
+        Expanded(
+          child: Slider(
+            min: min,
+            max: max,
+            value: value,
+            onChanged: onChanged,
+          ),
+        ),
+        SizedBox(
+          width: 54,
+          child: Text(
+            value.toStringAsFixed(1),
+            textAlign: TextAlign.right,
+            style: const TextStyle(fontFeatures: [FontFeature.tabularFigures()]),
+          ),
+        ),
+      ],
     );
   }
 }
@@ -858,9 +1561,16 @@ class _Panel extends StatelessWidget {
   Widget build(BuildContext context) {
     return DecoratedBox(
       decoration: BoxDecoration(
-        color: AppColors.surface.withOpacity(0.84),
+        color: AppColors.surface.withOpacity(0.88),
         border: Border.all(color: AppColors.line),
         borderRadius: BorderRadius.circular(8),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.22),
+            blurRadius: 22,
+            offset: const Offset(0, 10),
+          ),
+        ],
       ),
       child: Padding(padding: padding, child: child),
     );
@@ -881,6 +1591,21 @@ IconData _iconForKind(AssetKind kind) {
       return Icons.face_retouching_natural_rounded;
     case AssetKind.other:
       return Icons.folder_rounded;
+  }
+}
+
+String _assetCapability(LibraryAsset asset) {
+  switch (asset.kind) {
+    case AssetKind.model:
+      return asset.pmxCandidates.isEmpty ? 'No PMX/PMD detected' : '${asset.pmxCandidates.length} PMX/PMD';
+    case AssetKind.motion:
+    case AssetKind.camera:
+    case AssetKind.face:
+      return asset.motionCandidates.isEmpty ? 'No VMD/VPD detected' : '${asset.motionCandidates.length} motion files';
+    case AssetKind.audio:
+      return asset.audioCandidates.isEmpty ? 'No audio detected' : '${asset.audioCandidates.length} audio files';
+    case AssetKind.other:
+      return '${asset.fileCount} files';
   }
 }
 

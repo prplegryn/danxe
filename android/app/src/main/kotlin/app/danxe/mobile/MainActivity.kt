@@ -41,6 +41,8 @@ class MainActivity : FlutterActivity() {
                     "scanLibrary" -> result.success(scanLibrary().toString())
                     "importAsset" -> startImport(call, result)
                     "deleteAsset" -> deleteAsset(call, result)
+                    "renameAsset" -> renameAsset(call, result)
+                    "rescanAsset" -> rescanAsset(call, result)
                     "viewerLoadScene" -> viewerLoadScene(call, result)
                     "viewerClear" -> viewerCommand("clear", result)
                     "viewerPlay" -> viewerCommand("play", result)
@@ -103,6 +105,53 @@ class MainActivity : FlutterActivity() {
             target.deleteRecursively()
         }
         result.success(null)
+    }
+
+    private fun renameAsset(call: MethodCall, result: MethodChannel.Result) {
+        try {
+            val assetDir = assetDirectory(call)
+            requireInsideLibrary(assetDir)
+            require(assetDir.exists()) { "Asset does not exist." }
+
+            val manifest = readManifest(assetDir)
+            val kind = manifest.optString("kind", call.argument<String>("kind") ?: "other")
+            val id = manifest.optString("id", call.argument<String>("id") ?: assetDir.name)
+            val nextName = call.argument<String>("name")?.trim().orEmpty()
+            require(nextName.isNotEmpty()) { "Asset name cannot be empty." }
+
+            val metadata = scanAssetDirectory(
+                assetDir = assetDir,
+                kind = kind,
+                id = id,
+                displayName = nextName,
+                sourceFile = sourceFileFor(assetDir, manifest),
+            )
+            File(assetDir, "asset.json").writeText(metadata.toString(2))
+            result.success(metadata.toString())
+        } catch (error: Exception) {
+            result.error("RENAME_FAILED", error.message, null)
+        }
+    }
+
+    private fun rescanAsset(call: MethodCall, result: MethodChannel.Result) {
+        try {
+            val assetDir = assetDirectory(call)
+            requireInsideLibrary(assetDir)
+            require(assetDir.exists()) { "Asset does not exist." }
+
+            val manifest = readManifest(assetDir)
+            val metadata = scanAssetDirectory(
+                assetDir = assetDir,
+                kind = manifest.optString("kind", call.argument<String>("kind") ?: "other"),
+                id = manifest.optString("id", call.argument<String>("id") ?: assetDir.name),
+                displayName = manifest.optString("name", assetDir.name),
+                sourceFile = sourceFileFor(assetDir, manifest),
+            )
+            File(assetDir, "asset.json").writeText(metadata.toString(2))
+            result.success(metadata.toString())
+        } catch (error: Exception) {
+            result.error("RESCAN_FAILED", error.message, null)
+        }
     }
 
     private fun viewerLoadScene(call: MethodCall, result: MethodChannel.Result) {
@@ -270,6 +319,31 @@ class MainActivity : FlutterActivity() {
     }
 
     private fun libraryRoot(): File = File(filesDir, "danxe_library")
+
+    private fun assetDirectory(call: MethodCall): File {
+        val kind = call.argument<String>("kind") ?: "other"
+        val id = call.argument<String>("id") ?: ""
+        return File(File(libraryRoot(), kind), id)
+    }
+
+    private fun requireInsideLibrary(file: File) {
+        val rootPath = libraryRoot().canonicalPath
+        val targetPath = file.canonicalPath
+        require(targetPath.startsWith(rootPath + File.separator)) { "Blocked unsafe asset path." }
+    }
+
+    private fun readManifest(assetDir: File): JSONObject {
+        val manifest = File(assetDir, "asset.json")
+        return if (manifest.exists()) JSONObject(manifest.readText()) else JSONObject()
+    }
+
+    private fun sourceFileFor(assetDir: File, manifest: JSONObject): File {
+        val sourcePath = manifest.optString("sourcePath", "")
+        if (sourcePath.isNotBlank()) {
+            return File(sourcePath)
+        }
+        return assetDir.walkTopDown().firstOrNull { it.isFile && it.name != "asset.json" } ?: assetDir
+    }
 
     private fun relativePath(root: File, file: File): String {
         return file.absolutePath.removePrefix(root.absolutePath)

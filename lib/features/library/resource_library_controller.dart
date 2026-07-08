@@ -16,6 +16,7 @@ class ResourceLibraryController extends ChangeNotifier {
   LibraryAsset? _selectedMotion;
   LibraryAsset? _selectedCamera;
   LibraryAsset? _selectedAudio;
+  LibraryAsset? _selectedFace;
 
   bool get busy => _busy;
   String? get error => _error;
@@ -24,6 +25,7 @@ class ResourceLibraryController extends ChangeNotifier {
   LibraryAsset? get selectedMotion => _selectedMotion;
   LibraryAsset? get selectedCamera => _selectedCamera;
   LibraryAsset? get selectedAudio => _selectedAudio;
+  LibraryAsset? get selectedFace => _selectedFace;
 
   List<LibraryAsset> byKind(AssetKind kind) {
     return _assets.where((asset) => asset.kind == kind).toList(growable: false);
@@ -73,12 +75,49 @@ class ResourceLibraryController extends ChangeNotifier {
       if (_selectedMotion?.id == asset.id) _selectedMotion = null;
       if (_selectedCamera?.id == asset.id) _selectedCamera = null;
       if (_selectedAudio?.id == asset.id) _selectedAudio = null;
+      if (_selectedFace?.id == asset.id) _selectedFace = null;
       _error = null;
     } on Object catch (error) {
       _error = error.toString();
     } finally {
       _setBusy(false);
     }
+  }
+
+  Future<LibraryAsset?> rename(LibraryAsset asset, String name) async {
+    final trimmed = name.trim();
+    if (trimmed.isEmpty) {
+      _error = 'Asset name cannot be empty.';
+      notifyListeners();
+      return null;
+    }
+    _setBusy(true);
+    try {
+      final updated = await _bridge.renameAsset(asset, trimmed);
+      _replaceAsset(updated);
+      _error = null;
+      return updated;
+    } on Object catch (error) {
+      _error = error.toString();
+    } finally {
+      _setBusy(false);
+    }
+    return null;
+  }
+
+  Future<LibraryAsset?> rescan(LibraryAsset asset) async {
+    _setBusy(true);
+    try {
+      final updated = await _bridge.rescanAsset(asset);
+      _replaceAsset(updated);
+      _error = null;
+      return updated;
+    } on Object catch (error) {
+      _error = error.toString();
+    } finally {
+      _setBusy(false);
+    }
+    return null;
   }
 
   void select(LibraryAsset asset) {
@@ -96,10 +135,53 @@ class ResourceLibraryController extends ChangeNotifier {
         _selectedAudio = asset;
         break;
       case AssetKind.face:
+        _selectedFace = asset;
+        break;
       case AssetKind.other:
         break;
     }
     notifyListeners();
+  }
+
+  void clearSelection(AssetKind kind) {
+    switch (kind) {
+      case AssetKind.model:
+        _selectedModel = null;
+        break;
+      case AssetKind.motion:
+        _selectedMotion = null;
+        break;
+      case AssetKind.camera:
+        _selectedCamera = null;
+        break;
+      case AssetKind.audio:
+        _selectedAudio = null;
+        break;
+      case AssetKind.face:
+        _selectedFace = null;
+        break;
+      case AssetKind.other:
+        break;
+    }
+    notifyListeners();
+  }
+
+  void clearScene() {
+    _selectedModel = null;
+    _selectedMotion = null;
+    _selectedCamera = null;
+    _selectedAudio = null;
+    _selectedFace = null;
+    notifyListeners();
+  }
+
+  void _replaceAsset(LibraryAsset updated) {
+    _assets = _assets.map((asset) => asset.id == updated.id ? updated : asset).toList();
+    if (_selectedModel?.id == updated.id) _selectedModel = updated;
+    if (_selectedMotion?.id == updated.id) _selectedMotion = updated;
+    if (_selectedCamera?.id == updated.id) _selectedCamera = updated;
+    if (_selectedAudio?.id == updated.id) _selectedAudio = updated;
+    if (_selectedFace?.id == updated.id) _selectedFace = updated;
   }
 
   void _restoreSelections() {
@@ -117,6 +199,10 @@ class ResourceLibraryController extends ChangeNotifier {
         .firstWhere((asset) => asset != null, orElse: () => null);
     _selectedAudio ??= _assets
         .where((asset) => asset.kind == AssetKind.audio)
+        .cast<LibraryAsset?>()
+        .firstWhere((asset) => asset != null, orElse: () => null);
+    _selectedFace ??= _assets
+        .where((asset) => asset.kind == AssetKind.face)
         .cast<LibraryAsset?>()
         .firstWhere((asset) => asset != null, orElse: () => null);
   }

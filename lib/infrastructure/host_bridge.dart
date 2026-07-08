@@ -78,6 +78,24 @@ class HostBridge {
     );
   }
 
+  Future<LibraryAsset> renameAsset(LibraryAsset asset, String name) async {
+    final payload = await _channel.invokeMethod<String>(
+      'renameAsset',
+      <String, Object?>{'kind': asset.kind.name, 'id': asset.id, 'name': name},
+    );
+    final decoded = jsonDecode(payload ?? '{}') as Map<String, dynamic>;
+    return LibraryAsset.fromJson(Map<String, Object?>.from(decoded));
+  }
+
+  Future<LibraryAsset> rescanAsset(LibraryAsset asset) async {
+    final payload = await _channel.invokeMethod<String>(
+      'rescanAsset',
+      <String, Object?>{'kind': asset.kind.name, 'id': asset.id},
+    );
+    final decoded = jsonDecode(payload ?? '{}') as Map<String, dynamic>;
+    return LibraryAsset.fromJson(Map<String, Object?>.from(decoded));
+  }
+
   Future<void> viewerLoadScene({
     required LibraryAsset? model,
     LibraryAsset? motion,
