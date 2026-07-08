@@ -185,24 +185,17 @@ class ResourceLibraryController extends ChangeNotifier {
   }
 
   void _restoreSelections() {
-    _selectedModel ??= _assets
-        .where((asset) => asset.kind == AssetKind.model)
-        .cast<LibraryAsset?>()
-        .firstWhere((asset) => asset != null, orElse: () => null);
-    _selectedMotion ??= _assets
-        .where((asset) => asset.kind == AssetKind.motion)
-        .cast<LibraryAsset?>()
-        .firstWhere((asset) => asset != null, orElse: () => null);
-    _selectedCamera ??= _assets
-        .where((asset) => asset.kind == AssetKind.camera)
-        .cast<LibraryAsset?>()
-        .firstWhere((asset) => asset != null, orElse: () => null);
-    _selectedAudio ??= _assets
-        .where((asset) => asset.kind == AssetKind.audio)
-        .cast<LibraryAsset?>()
-        .firstWhere((asset) => asset != null, orElse: () => null);
-    _selectedFace ??= _assets
-        .where((asset) => asset.kind == AssetKind.face)
+    _selectedModel = _existingSelection(_selectedModel, AssetKind.model);
+    _selectedMotion = _existingSelection(_selectedMotion, AssetKind.motion);
+    _selectedCamera = _existingSelection(_selectedCamera, AssetKind.camera);
+    _selectedAudio = _existingSelection(_selectedAudio, AssetKind.audio);
+    _selectedFace = _existingSelection(_selectedFace, AssetKind.face);
+  }
+
+  LibraryAsset? _existingSelection(LibraryAsset? selected, AssetKind kind) {
+    if (selected == null) return null;
+    return _assets
+        .where((asset) => asset.kind == kind && asset.id == selected.id)
         .cast<LibraryAsset?>()
         .firstWhere((asset) => asset != null, orElse: () => null);
   }

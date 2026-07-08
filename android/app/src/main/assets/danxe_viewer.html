@@ -138,6 +138,7 @@
       state.playing = false;
       state.loaded = false;
       state.cameraMotion = false;
+      if (state.controls) state.controls.enabled = true;
     }
 
     function disposeObject(object) {
@@ -184,8 +185,10 @@
           const cameraAnimation = await loadCameraAnimation(loader, cameraUrls);
           state.helper.add(state.camera, { animation: cameraAnimation });
           state.cameraMotion = true;
+          state.controls.enabled = false;
           state.duration = Math.max(state.duration, animationDuration(cameraAnimation));
         } else {
+          state.controls.enabled = true;
           applyManualCamera();
         }
 
@@ -289,10 +292,12 @@
     function play() {
       if (!state.loaded) return;
       state.playing = true;
+      clock.getDelta();
       if (state.audio && state.audio.buffer) {
         try {
           if (state.audio.isPlaying) state.audio.stop();
           state.audio.offset = Math.min(state.current, state.audio.buffer.duration);
+          if (state.audio.setPlaybackRate) state.audio.setPlaybackRate(state.speed);
           state.audio.play();
         } catch (_) {}
       }
@@ -318,6 +323,9 @@
 
     function setSpeed(payload) {
       state.speed = Math.max(0.25, Math.min(Number(payload && payload.speed || 1), 2));
+      if (state.audio && state.audio.setPlaybackRate) {
+        try { state.audio.setPlaybackRate(state.speed); } catch (_) {}
+      }
       postStatus();
     }
 
@@ -327,6 +335,10 @@
         pitch: Number(payload && payload.pitch || state.manualCamera.pitch),
         distance: Number(payload && payload.distance || state.manualCamera.distance)
       };
+      if (state.cameraMotion) {
+        state.cameraMotion = false;
+        if (state.controls) state.controls.enabled = true;
+      }
       applyManualCamera();
       postStatus();
     }
@@ -408,14 +420,36 @@
       requestAnimationFrame(tick);
       const delta = Math.min(clock.getDelta(), 1 / 15);
       if (state.loaded && state.playing && state.duration > 0) {
-        state.current += delta * state.speed;
-        if (state.current > state.duration) state.current = 0;
-        setHelperTime(state.current);
+        advanceAnimation(delta * state.speed);
       }
       if (state.controls && !state.cameraMotion) state.controls.update();
       if (state.renderer && state.scene && state.camera) {
         state.renderer.render(state.scene, state.camera);
       }
+    }
+
+    function advanceAnimation(delta) {
+      if (!state.helper || delta <= 0) return;
+      const next = state.current + delta;
+      if (next >= state.duration) {
+        const wrapped = state.duration > 0 ? next % state.duration : 0;
+        setHelperTime(wrapped);
+        restartAudioAtCurrent();
+      } else {
+        state.helper.update(delta);
+        state.current = next;
+        if (!state.cameraMotion) applyManualCamera();
+      }
+    }
+
+    function restartAudioAtCurrent() {
+      if (!state.audio || !state.audio.buffer || !state.playing) return;
+      try {
+        if (state.audio.isPlaying) state.audio.stop();
+        state.audio.offset = Math.min(state.current, state.audio.buffer.duration);
+        if (state.audio.setPlaybackRate) state.audio.setPlaybackRate(state.speed);
+        state.audio.play();
+      } catch (_) {}
     }
 
     function postStatus() {
