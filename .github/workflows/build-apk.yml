@@ -39,6 +39,22 @@ jobs:
       - name: Resolve packages
         run: flutter pub get
 
+      - name: Vendor MMD renderer assets
+        run: |
+          set -euo pipefail
+          base="https://cdn.jsdelivr.net/npm/three@0.160.0"
+          root="android/app/src/main/assets/vendor"
+          mkdir -p "$root/examples/jsm/loaders" "$root/examples/jsm/animation" "$root/examples/jsm/controls" "$root/examples/jsm/shaders" "$root/examples/jsm/libs"
+          curl -fsSL "$base/build/three.module.js" -o "$root/three.module.js"
+          curl -fsSL "$base/examples/jsm/loaders/MMDLoader.js" -o "$root/examples/jsm/loaders/MMDLoader.js"
+          curl -fsSL "$base/examples/jsm/loaders/TGALoader.js" -o "$root/examples/jsm/loaders/TGALoader.js"
+          curl -fsSL "$base/examples/jsm/animation/MMDAnimationHelper.js" -o "$root/examples/jsm/animation/MMDAnimationHelper.js"
+          curl -fsSL "$base/examples/jsm/animation/CCDIKSolver.js" -o "$root/examples/jsm/animation/CCDIKSolver.js"
+          curl -fsSL "$base/examples/jsm/animation/MMDPhysics.js" -o "$root/examples/jsm/animation/MMDPhysics.js"
+          curl -fsSL "$base/examples/jsm/controls/OrbitControls.js" -o "$root/examples/jsm/controls/OrbitControls.js"
+          curl -fsSL "$base/examples/jsm/shaders/MMDToonShader.js" -o "$root/examples/jsm/shaders/MMDToonShader.js"
+          curl -fsSL "$base/examples/jsm/libs/mmdparser.module.js" -o "$root/examples/jsm/libs/mmdparser.module.js"
+
       - name: Build release APK
         run: flutter build apk --release
 
