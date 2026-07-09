@@ -58,17 +58,18 @@
     const defaultLook = Object.freeze({
       preset: 'balanced',
       enabled: true,
-      exposure: 1.12,
-      contrast: 1.06,
-      saturation: 1.10,
-      brightness: 1.02,
-      ambient: 1.55,
-      key: 2.35,
-      rim: 0.55,
-      specular: 0.60,
-      shininess: 34,
+      exposure: 1.00,
+      contrast: 1.18,
+      saturation: 1.28,
+      brightness: 1.00,
+      dehaze: 0.08,
+      ambient: 1.05,
+      key: 1.55,
+      rim: 0.35,
+      specular: 0.45,
+      shininess: 30,
       toon: 1.00,
-      texture: 1.00,
+      texture: 1.22,
       floor: true
     });
     const neutralLook = Object.freeze({
@@ -78,6 +79,7 @@
       contrast: 1.0,
       saturation: 1.0,
       brightness: 1.0,
+      dehaze: 0.0,
       ambient: 2.0,
       key: 2.1,
       rim: 0.0,
@@ -183,7 +185,7 @@
       state.renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
       state.renderer.setSize(innerWidth, innerHeight);
       state.renderer.outputColorSpace = THREE.SRGBColorSpace;
-      state.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+      state.renderer.toneMapping = THREE.LinearToneMapping;
       state.renderer.toneMappingExposure = defaultLook.exposure;
       stage.appendChild(state.renderer.domElement);
 
@@ -221,16 +223,17 @@
         preset: source.preset ? String(source.preset) : defaultLook.preset,
         enabled: source.enabled !== false,
         exposure: clampNumber(source.exposure, defaultLook.exposure, 0.5, 2.0),
-        contrast: clampNumber(source.contrast, defaultLook.contrast, 0.5, 1.8),
-        saturation: clampNumber(source.saturation, defaultLook.saturation, 0.3, 2.0),
+        contrast: clampNumber(source.contrast, defaultLook.contrast, 0.5, 2.5),
+        saturation: clampNumber(source.saturation, defaultLook.saturation, 0.3, 3.0),
         brightness: clampNumber(source.brightness, defaultLook.brightness, 0.5, 1.6),
+        dehaze: clampNumber(source.dehaze, defaultLook.dehaze, 0.0, 0.55),
         ambient: clampNumber(source.ambient, defaultLook.ambient, 0.0, 4.0),
         key: clampNumber(source.key, defaultLook.key, 0.0, 5.0),
         rim: clampNumber(source.rim, defaultLook.rim, 0.0, 3.0),
         specular: clampNumber(source.specular, defaultLook.specular, 0.0, 2.0),
         shininess: clampNumber(source.shininess, defaultLook.shininess, 1.0, 120.0),
         toon: clampNumber(source.toon, defaultLook.toon, 0.3, 2.0),
-        texture: clampNumber(source.texture, defaultLook.texture, 0.3, 2.0),
+        texture: clampNumber(source.texture, defaultLook.texture, 0.3, 2.5),
         floor: source.floor !== false
       };
     }
@@ -253,7 +256,7 @@
         state.scene.background = new THREE.Color(0x05070d);
       }
       if (state.renderer) {
-        state.renderer.toneMapping = enabled ? THREE.ACESFilmicToneMapping : THREE.NoToneMapping;
+        state.renderer.toneMapping = enabled ? THREE.LinearToneMapping : THREE.NoToneMapping;
         state.renderer.toneMappingExposure = look.exposure;
       }
       if (state.hemiLight) {
@@ -280,6 +283,8 @@
 
     function applyMaterialLook(material, look, enabled) {
       if (!material) return;
+      ensureMaterialLookShader(material);
+      updateLookShaderUniforms(material, look, enabled);
       prepareTextureColorSpace(material);
       const base = materialLookBase(material);
       if (!base) return;
@@ -310,7 +315,88 @@
         multiplyUniformColor(material, 'specular', look.specular);
         setUniformNumber(material, 'shininess', look.shininess);
       }
+    }
+
+    function ensureMaterialLookShader(material) {
+      if (!material) return;
+      if (!material.userData) material.userData = {};
+      if (material.userData.danxeShaderPatched) return;
+      const previousCompile = material.onBeforeCompile;
+      const previousKey = material.customProgramCacheKey ? material.customProgramCacheKey.bind(material) : null;
+      material.onBeforeCompile = (shader, renderer) => {
+        if (previousCompile) previousCompile(shader, renderer);
+        const look = state.look && state.look.enabled !== false ? state.look : neutralLook;
+        shader.uniforms.danxeLookEnabled = { value: state.look && state.look.enabled !== false ? 1.0 : 0.0 };
+        shader.uniforms.danxeContrast = { value: look.contrast };
+        shader.uniforms.danxeSaturation = { value: look.saturation * look.texture };
+        shader.uniforms.danxeBrightness = { value: look.brightness };
+        shader.uniforms.danxeDehaze = { value: look.dehaze };
+        shader.fragmentShader = injectLookShader(shader.fragmentShader);
+        material.userData.danxeShaderUniforms = shader.uniforms;
+      };
+      material.customProgramCacheKey = () => {
+        const baseKey = previousKey ? previousKey() : '';
+        return `${baseKey}|danxe-look-v2`;
+      };
+      material.userData.danxeShaderPatched = true;
       material.needsUpdate = true;
+    }
+
+    function injectLookShader(fragmentShader) {
+      const header = `
+uniform float danxeLookEnabled;
+uniform float danxeContrast;
+uniform float danxeSaturation;
+uniform float danxeBrightness;
+uniform float danxeDehaze;
+
+vec3 danxeApplyLook(vec3 color) {
+  if (danxeLookEnabled < 0.5) return color;
+  color = max((color - vec3(danxeDehaze)) / max(1.0 - danxeDehaze, 0.001), vec3(0.0));
+  color *= danxeBrightness;
+  color = (color - vec3(0.5)) * danxeContrast + vec3(0.5);
+  float luma = dot(color, vec3(0.299, 0.587, 0.114));
+  float chroma = max(max(color.r, color.g), color.b) - min(min(color.r, color.g), color.b);
+  float vibrance = max(danxeSaturation - 1.0, 0.0) * (1.0 - clamp(chroma, 0.0, 1.0));
+  color = mix(vec3(luma), color, danxeSaturation + vibrance);
+  return max(color, vec3(0.0));
+}
+`;
+      let shader = withLookHeader(fragmentShader, header);
+      if (shader.includes('#include <colorspace_fragment>')) {
+        return shader.replace(
+          '#include <colorspace_fragment>',
+          'gl_FragColor.rgb = danxeApplyLook(gl_FragColor.rgb);\n#include <colorspace_fragment>'
+        );
+      }
+      if (shader.includes('#include <encodings_fragment>')) {
+        return shader.replace(
+          '#include <encodings_fragment>',
+          'gl_FragColor.rgb = danxeApplyLook(gl_FragColor.rgb);\n#include <encodings_fragment>'
+        );
+      }
+      return shader.replace(
+        /gl_FragColor\s*=\s*([^;]+);/g,
+        'gl_FragColor = $1;\ngl_FragColor.rgb = danxeApplyLook(gl_FragColor.rgb);'
+      );
+    }
+
+    function withLookHeader(fragmentShader, header) {
+      if (!fragmentShader.startsWith('#version')) return header + fragmentShader;
+      const lineEnd = fragmentShader.indexOf('\n');
+      if (lineEnd < 0) return fragmentShader + '\n' + header;
+      return fragmentShader.slice(0, lineEnd + 1) + header + fragmentShader.slice(lineEnd + 1);
+    }
+
+    function updateLookShaderUniforms(material, look, enabled) {
+      const uniforms = material.userData && material.userData.danxeShaderUniforms;
+      if (!uniforms) return;
+      const active = enabled ? look : neutralLook;
+      uniforms.danxeLookEnabled.value = enabled ? 1.0 : 0.0;
+      uniforms.danxeContrast.value = active.contrast;
+      uniforms.danxeSaturation.value = active.saturation * active.texture;
+      uniforms.danxeBrightness.value = active.brightness;
+      uniforms.danxeDehaze.value = active.dehaze;
     }
 
     function materialLookBase(material) {
@@ -377,6 +463,7 @@
       color.getHSL(hsl);
       const texturePunch = 0.88 + look.texture * 0.12;
       hsl.s = clamp(hsl.s * look.saturation * look.texture, 0, 1);
+      hsl.l = clamp((hsl.l - look.dehaze) / Math.max(1.0 - look.dehaze, 0.001), 0, 1);
       hsl.l = clamp(((hsl.l - 0.5) * look.contrast * texturePunch + 0.5) * look.brightness, 0, 1);
       color.setHSL(hsl.h, hsl.s, hsl.l);
     }
