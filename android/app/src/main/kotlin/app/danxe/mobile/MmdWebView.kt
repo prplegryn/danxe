@@ -272,8 +272,9 @@ class MmdWebView(
 
     private fun saveExport(bytes: ByteArray, safeName: String, mimeType: String): String {
         ensureDownloadExportRoot()
+        val storageMimeType = normalizeVideoMimeType(mimeType)
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            saveExportWithMediaStore(bytes, safeName, mimeType)
+            saveExportWithMediaStore(bytes, safeName, storageMimeType)
         } else {
             saveExportLegacy(bytes, safeName)
         }
@@ -320,10 +321,18 @@ class MmdWebView(
     }
 
     private fun exportExtension(mimeType: String): String {
-        return when {
-            mimeType.contains("mp4", ignoreCase = true) -> "mp4"
-            mimeType.contains("webm", ignoreCase = true) -> "webm"
+        return when (normalizeVideoMimeType(mimeType)) {
+            "video/mp4" -> "mp4"
+            "video/webm" -> "webm"
             else -> "mp4"
+        }
+    }
+
+    private fun normalizeVideoMimeType(mimeType: String): String {
+        return when {
+            mimeType.contains("mp4", ignoreCase = true) -> "video/mp4"
+            mimeType.contains("webm", ignoreCase = true) -> "video/webm"
+            else -> "video/mp4"
         }
     }
 
@@ -348,14 +357,15 @@ class MmdWebView(
         @JavascriptInterface
         fun saveRecording(base64Video: String, mimeType: String, fileName: String) {
             try {
-                val safeName = normalizeExportName(fileName, mimeType)
+                val storageMimeType = normalizeVideoMimeType(mimeType)
+                val safeName = normalizeExportName(fileName, storageMimeType)
                 val bytes = Base64.decode(base64Video, Base64.DEFAULT)
-                val outputPath = saveExport(bytes, safeName, mimeType)
+                val outputPath = saveExport(bytes, safeName, storageMimeType)
                 main.post {
                     val payload = JSONObject()
                         .put("type", "exportComplete")
                         .put("path", outputPath)
-                        .put("mimeType", mimeType)
+                        .put("mimeType", storageMimeType)
                     events.invokeMethod("viewerStatus", payload.toString())
                     MmdViewRegistry.pendingExportResult?.success(outputPath)
                     MmdViewRegistry.pendingExportResult = null

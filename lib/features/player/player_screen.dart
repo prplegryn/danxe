@@ -286,9 +286,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
         }
         break;
       case 'exportStarted':
+        final audioLabel = event.values['audio'] == true ? 'audio' : 'no audio';
         _logs.info(
           'export',
-          'Recording ${event.values['width']}x${event.values['height']} ${event.values['fps']}fps ${event.values['mimeType']}.',
+          'Recording ${event.values['width']}x${event.values['height']} ${event.values['fps']}fps ${event.values['mimeType']} $audioLabel.',
         );
         break;
     }

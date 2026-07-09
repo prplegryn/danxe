@@ -1163,10 +1163,14 @@ vec3 danxeApplyLook(vec3 color) {
       state.renderer.setSize(width, height, false);
       resizeCamera(width, height);
       const chunks = [];
-      const stream = canvas.captureStream(fps);
-      const format = pickRecordingFormat();
+      const videoStream = canvas.captureStream(fps);
+      const audioCapture = createExportAudioCapture();
+      const hasAudio = audioCapture && audioCapture.stream.getAudioTracks().length > 0;
+      const stream = mergeExportStreams(videoStream, audioCapture ? audioCapture.stream : null);
+      const format = pickRecordingFormat(hasAudio);
       if (!format) {
         stream.getTracks().forEach((track) => track.stop());
+        cleanupExportAudioCapture(audioCapture);
         exportError('This WebView does not support canvas video recording formats.');
         return;
       }
@@ -1179,6 +1183,7 @@ vec3 danxeApplyLook(vec3 color) {
         recorder = new MediaRecorder(stream, recorderOptions);
       } catch (error) {
         stream.getTracks().forEach((track) => track.stop());
+        cleanupExportAudioCapture(audioCapture);
         exportError(error && error.message ? error.message : 'Unable to start video recorder.');
         return;
       }
@@ -1203,6 +1208,8 @@ vec3 danxeApplyLook(vec3 color) {
         } catch (error) {
           exportError(error && error.message ? error.message : String(error));
         } finally {
+          stopExportAudioCapture(audioCapture);
+          cleanupExportAudioCapture(audioCapture);
           stream.getTracks().forEach((track) => track.stop());
           state.renderer.setPixelRatio(previous.pixelRatio);
           resize();
@@ -1211,13 +1218,14 @@ vec3 danxeApplyLook(vec3 color) {
           state.recorder = null;
         }
       };
-      post({ type: 'exportStarted', seconds, fps, width, height, mimeType: format.mimeType });
+      post({ type: 'exportStarted', seconds, fps, width, height, mimeType: format.mimeType, audio: hasAudio === true });
       state.playing = false;
       setHelperTime(0);
       renderExportFrame();
       recorder.start(1000);
       await waitForRecorderStart(recorder);
-      await recordFrames({ fps, seconds });
+      await startExportAudioCapture(audioCapture);
+      await recordFrames({ seconds });
       if (recorder.state !== 'inactive') {
         if (recorder.requestData) recorder.requestData();
         await wait(240);
@@ -1234,16 +1242,77 @@ vec3 danxeApplyLook(vec3 color) {
       });
     }
 
-    async function recordFrames({ fps, seconds }) {
-      const totalFrames = Math.max(1, Math.round(seconds * fps));
-      const frameDuration = 1 / fps;
-      const frameDelay = 1000 / fps;
+    function createExportAudioCapture() {
+      if (!state.audio || !state.audio.buffer || !state.listener) return null;
+      const context = state.listener.context;
+      if (!context || !context.createMediaStreamDestination) return null;
+      const output = state.audio.getOutput ? state.audio.getOutput() : state.audio.gain;
+      if (!output || !output.connect) return null;
+      const destination = context.createMediaStreamDestination();
+      try {
+        output.connect(destination);
+      } catch (_) {
+        return null;
+      }
+      return { destination, output, stream: destination.stream };
+    }
+
+    function mergeExportStreams(videoStream, audioStream) {
+      if (!audioStream || audioStream.getAudioTracks().length <= 0 || !window.MediaStream) {
+        return videoStream;
+      }
+      return new MediaStream([
+        ...videoStream.getVideoTracks(),
+        ...audioStream.getAudioTracks()
+      ]);
+    }
+
+    async function startExportAudioCapture(capture) {
+      if (!capture || !state.audio || !state.audio.buffer) return;
+      try {
+        const context = state.listener && state.listener.context;
+        if (context && context.state === 'suspended' && context.resume) {
+          await context.resume();
+        }
+        if (state.audio.isPlaying) state.audio.stop();
+        state.audio.offset = 0;
+        if (state.audio.setPlaybackRate) state.audio.setPlaybackRate(1);
+        state.audio.play();
+      } catch (_) {}
+    }
+
+    function stopExportAudioCapture(capture) {
+      if (!capture || !state.audio) return;
+      try {
+        if (state.audio.isPlaying) state.audio.stop();
+      } catch (_) {}
+    }
+
+    function cleanupExportAudioCapture(capture) {
+      if (!capture || !capture.output || !capture.destination) return;
+      try {
+        capture.output.disconnect(capture.destination);
+      } catch (_) {}
+    }
+
+    async function recordFrames({ seconds }) {
+      const startTime = performance.now();
+      let lastTime = startTime;
       await nextFrame();
-      for (let frame = 0; frame < totalFrames; frame++) {
+      while (true) {
         if (!state.recorder || state.recorder.state === 'inactive') break;
-        if (frame > 0) advanceAnimation(frameDuration);
+        const now = performance.now();
+        const elapsed = (now - startTime) / 1000;
+        if (elapsed >= seconds) {
+          setHelperTime(seconds, false);
+          renderExportFrame();
+          break;
+        }
+        const delta = Math.min(Math.max((now - lastTime) / 1000, 0), 1 / 8);
+        lastTime = now;
+        advanceAnimation(delta);
         renderExportFrame();
-        await wait(frameDelay);
+        await nextFrame();
       }
     }
 
@@ -1269,16 +1338,30 @@ vec3 danxeApplyLook(vec3 color) {
       post({ type: 'exportError', message });
     }
 
-    function pickRecordingFormat() {
-      const formats = [
-        { mimeType: 'video/webm;codecs=vp9', extension: 'webm' },
-        { mimeType: 'video/webm;codecs=vp8', extension: 'webm' },
-        { mimeType: 'video/webm', extension: 'webm' },
-        { mimeType: 'video/mp4;codecs=avc1.42E01E', extension: 'mp4' },
-        { mimeType: 'video/mp4;codecs=avc1.42001E', extension: 'mp4' },
-        { mimeType: 'video/mp4;codecs=h264', extension: 'mp4' },
-        { mimeType: 'video/mp4', extension: 'mp4' }
-      ];
+    function pickRecordingFormat(hasAudio) {
+      const mp4Formats = hasAudio
+        ? [
+            { mimeType: 'video/mp4;codecs=avc1.42E01E,mp4a.40.2', extension: 'mp4' },
+            { mimeType: 'video/mp4;codecs=h264,mp4a.40.2', extension: 'mp4' },
+            { mimeType: 'video/mp4', extension: 'mp4' }
+          ]
+        : [
+            { mimeType: 'video/mp4;codecs=avc1.42E01E', extension: 'mp4' },
+            { mimeType: 'video/mp4;codecs=h264', extension: 'mp4' },
+            { mimeType: 'video/mp4', extension: 'mp4' }
+          ];
+      const webmFormats = hasAudio
+        ? [
+            { mimeType: 'video/webm;codecs=vp9,opus', extension: 'webm' },
+            { mimeType: 'video/webm;codecs=vp8,opus', extension: 'webm' },
+            { mimeType: 'video/webm', extension: 'webm' }
+          ]
+        : [
+            { mimeType: 'video/webm;codecs=vp9', extension: 'webm' },
+            { mimeType: 'video/webm;codecs=vp8', extension: 'webm' },
+            { mimeType: 'video/webm', extension: 'webm' }
+          ];
+      const formats = [...mp4Formats, ...webmFormats];
       return formats.find((format) => MediaRecorder.isTypeSupported(format.mimeType)) || null;
     }
 
