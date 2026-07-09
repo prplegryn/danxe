@@ -185,6 +185,7 @@
       state.loaded = false;
       state.cameraMotion = false;
       state.physicsEnabled = false;
+      state.physicsWarningShown = false;
       if (state.controls) state.controls.enabled = true;
     }
 
@@ -243,6 +244,7 @@
         const mmd = await loadModelAndMotion(loader, input.modelUrl, motionUrls);
         state.mesh = mmd.mesh;
         state.mesh.frustumCulled = false;
+        sanitizeMmdMetadata(state.mesh);
         state.scene.add(state.mesh);
         const helperState = addMeshToHelper(state.mesh, mmd.animation, physicsReady);
         state.physicsEnabled = helperState.physics;
@@ -283,6 +285,79 @@
         const message = error && error.message ? error.message : String(error);
         setStatus('Renderer error:\n' + message);
         post({ type: 'error', message });
+      }
+    }
+
+    function sanitizeMmdMetadata(mesh) {
+      const geometry = mesh && mesh.geometry;
+      const mmd = geometry && geometry.userData ? geometry.userData.MMD : null;
+      const skeletonBones = mesh && mesh.skeleton ? mesh.skeleton.bones : [];
+      if (!mmd || !Array.isArray(mmd.bones) || skeletonBones.length === 0) return;
+
+      const validBoneIndex = (index) => (
+        Number.isInteger(index) &&
+        index >= 0 &&
+        index < skeletonBones.length &&
+        !!skeletonBones[index]
+      );
+      const removedGrantKeys = new Set();
+      let removedIks = 0;
+      let removedIkLinks = 0;
+
+      for (let index = 0; index < mmd.bones.length; index++) {
+        const bone = mmd.bones[index];
+        if (!bone) continue;
+        if (bone.grant && (!validBoneIndex(index) || !validBoneIndex(bone.grant.parentIndex))) {
+          removedGrantKeys.add(`${index}:${bone.grant.parentIndex}`);
+          delete bone.grant;
+        }
+        if (bone.ik) {
+          if (!validBoneIndex(index) || !validBoneIndex(bone.ik.effector)) {
+            delete bone.ik;
+            removedIks += 1;
+          } else if (Array.isArray(bone.ik.links)) {
+            const links = bone.ik.links.filter((link) => validBoneIndex(link.index));
+            removedIkLinks += bone.ik.links.length - links.length;
+            bone.ik.links = links;
+          }
+        }
+      }
+
+      if (Array.isArray(mmd.grants)) {
+        const grants = mmd.grants.filter((grant) =>
+          validBoneIndex(grant.index) && validBoneIndex(grant.parentIndex)
+        );
+        for (const grant of mmd.grants) {
+          if (!validBoneIndex(grant.index) || !validBoneIndex(grant.parentIndex)) {
+            removedGrantKeys.add(`${grant.index}:${grant.parentIndex}`);
+          }
+        }
+        mmd.grants = grants;
+      }
+
+      if (Array.isArray(mmd.iks)) {
+        const iks = [];
+        for (const ik of mmd.iks) {
+          if (!validBoneIndex(ik.target) || !validBoneIndex(ik.effector)) {
+            removedIks += 1;
+            continue;
+          }
+          if (Array.isArray(ik.links)) {
+            const links = ik.links.filter((link) => validBoneIndex(link.index));
+            removedIkLinks += ik.links.length - links.length;
+            ik.links = links;
+          }
+          iks.push(ik);
+        }
+        mmd.iks = iks;
+      }
+
+      if (removedGrantKeys.size || removedIks || removedIkLinks) {
+        post({
+          type: 'message',
+          message: `Sanitized PMX metadata: ${removedGrantKeys.size} grant, ${removedIks} IK, ${removedIkLinks} IK links.`,
+          hidden: true
+        });
       }
     }
 
