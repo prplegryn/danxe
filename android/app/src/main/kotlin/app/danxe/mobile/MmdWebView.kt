@@ -244,6 +244,24 @@ class MmdWebView(
         return candidate
     }
 
+    private fun exportExtension(mimeType: String): String {
+        return when {
+            mimeType.contains("mp4", ignoreCase = true) -> "mp4"
+            mimeType.contains("webm", ignoreCase = true) -> "webm"
+            else -> "mp4"
+        }
+    }
+
+    private fun normalizeExportName(fileName: String, mimeType: String): String {
+        val extension = exportExtension(mimeType)
+        val safe = fileName.replace(Regex("[^A-Za-z0-9._-]"), "_").ifBlank {
+            "danxe_export.$extension"
+        }
+        val dot = safe.lastIndexOf('.')
+        val base = if (dot > 0) safe.substring(0, dot) else safe
+        return "$base.$extension"
+    }
+
     inner class AndroidBridge {
         @JavascriptInterface
         fun postStatus(payload: String) {
@@ -255,14 +273,7 @@ class MmdWebView(
         @JavascriptInterface
         fun saveRecording(base64Video: String, mimeType: String, fileName: String) {
             try {
-                val extension = when {
-                    mimeType.contains("webm", ignoreCase = true) -> "webm"
-                    mimeType.contains("mp4", ignoreCase = true) -> "mp4"
-                    else -> "webm"
-                }
-                val safeName = fileName.replace(Regex("[^A-Za-z0-9._-]"), "_").ifBlank {
-                    "danxe_export.$extension"
-                }
+                val safeName = normalizeExportName(fileName, mimeType)
                 val bytes = Base64.decode(base64Video, Base64.DEFAULT)
                 val outputPath = saveExport(bytes, safeName, mimeType)
                 main.post {

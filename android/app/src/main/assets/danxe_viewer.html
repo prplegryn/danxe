@@ -441,11 +441,24 @@
         stream = canvas.captureStream(0);
         videoTrack = stream.getVideoTracks()[0];
       }
-      const mimeType = pickMimeType();
-      const recorderOptions = mimeType
-        ? { mimeType, videoBitsPerSecond: bitrate }
-        : { videoBitsPerSecond: bitrate };
-      const recorder = new MediaRecorder(stream, recorderOptions);
+      const format = pickRecordingFormat();
+      if (!format) {
+        stream.getTracks().forEach((track) => track.stop());
+        exportError('This WebView does not support MP4 canvas recording.');
+        return;
+      }
+      const recorderOptions = {
+        mimeType: format.mimeType,
+        videoBitsPerSecond: bitrate
+      };
+      let recorder;
+      try {
+        recorder = new MediaRecorder(stream, recorderOptions);
+      } catch (error) {
+        stream.getTracks().forEach((track) => track.stop());
+        exportError(error && error.message ? error.message : 'Unable to start MP4 recorder.');
+        return;
+      }
       state.recorder = recorder;
       recorder.ondataavailable = (event) => {
         if (event.data && event.data.size > 0) chunks.push(event.data);
@@ -454,13 +467,16 @@
       recorder.onstop = async () => {
         try {
           stream.getTracks().forEach((track) => track.stop());
-          const blob = new Blob(chunks, { type: recorder.mimeType || 'video/webm' });
+          const blob = new Blob(chunks, { type: recorder.mimeType || format.mimeType });
+          if (blob.size <= 0) {
+            throw new Error('Recorder produced an empty video file.');
+          }
           const bytes = new Uint8Array(await blob.arrayBuffer());
           let binary = '';
           for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
           const base64 = btoa(binary);
           const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-          window.DanxeAndroid.saveRecording(base64, blob.type, `danxe_${stamp}.webm`);
+          window.DanxeAndroid.saveRecording(base64, blob.type || format.mimeType, `danxe_${stamp}.${format.extension}`);
         } catch (error) {
           exportError(error && error.message ? error.message : String(error));
         } finally {
@@ -472,7 +488,7 @@
           state.recorder = null;
         }
       };
-      post({ type: 'exportStarted', seconds, fps, width, height });
+      post({ type: 'exportStarted', seconds, fps, width, height, mimeType: format.mimeType });
       state.playing = false;
       recorder.start(1000);
       await recordFrames({
@@ -480,7 +496,11 @@
         seconds,
         requestFrame: videoTrack && videoTrack.requestFrame ? () => videoTrack.requestFrame() : null
       });
-      if (recorder.state !== 'inactive') recorder.stop();
+      if (recorder.state !== 'inactive') {
+        if (recorder.requestData) recorder.requestData();
+        await wait(80);
+        recorder.stop();
+      }
     }
 
     async function recordFrames({ fps, seconds, requestFrame }) {
@@ -510,9 +530,14 @@
       post({ type: 'exportError', message });
     }
 
-    function pickMimeType() {
-      const types = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm'];
-      return types.find((type) => MediaRecorder.isTypeSupported(type)) || '';
+    function pickRecordingFormat() {
+      const formats = [
+        { mimeType: 'video/mp4;codecs=avc1.42E01E', extension: 'mp4' },
+        { mimeType: 'video/mp4;codecs=avc1.42001E', extension: 'mp4' },
+        { mimeType: 'video/mp4;codecs=h264', extension: 'mp4' },
+        { mimeType: 'video/mp4', extension: 'mp4' }
+      ];
+      return formats.find((format) => MediaRecorder.isTypeSupported(format.mimeType)) || null;
     }
 
     function tick() {

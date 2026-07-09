@@ -84,6 +84,12 @@ class _PlayerScreenState extends State<PlayerScreen> {
           _showMessage('Video exported: ${event.path}');
         }
         break;
+      case 'exportStarted':
+        _logs.info(
+          'export',
+          'Recording ${event.values['width']}x${event.values['height']} ${event.values['fps']}fps ${event.values['mimeType']}.',
+        );
+        break;
     }
   }
 
