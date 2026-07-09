@@ -1,10 +1,14 @@
 package app.danxe.mobile
 
 import android.annotation.SuppressLint
+import android.content.ContentValues
 import android.content.Context
 import android.net.Uri
+import android.os.Build
+import android.os.Environment
 import android.os.Handler
 import android.os.Looper
+import android.provider.MediaStore
 import android.util.Base64
 import android.view.View
 import android.webkit.JavascriptInterface
@@ -25,6 +29,7 @@ class MmdWebView(
     private val events: MethodChannel,
     private val libraryRoot: File,
 ) : PlatformView {
+    private val appContext = context.applicationContext
     private val main = Handler(Looper.getMainLooper())
     private val webView = WebView(context)
     private val pendingScripts = mutableListOf<String>()
@@ -32,6 +37,7 @@ class MmdWebView(
     private val virtualHost = "danxe.local"
 
     init {
+        ensureDownloadExportRoot()
         configureWebView()
         webView.loadUrl("file:///android_asset/danxe_viewer.html")
     }
@@ -177,6 +183,67 @@ class MmdWebView(
         }
     }
 
+    private fun ensureDownloadExportRoot(): File {
+        val root = File(
+            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
+            "danxe",
+        )
+        try {
+            root.mkdirs()
+        } catch (_: Exception) {
+        }
+        return root
+    }
+
+    private fun saveExport(bytes: ByteArray, safeName: String, mimeType: String): String {
+        ensureDownloadExportRoot()
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            saveExportWithMediaStore(bytes, safeName, mimeType)
+        } else {
+            saveExportLegacy(bytes, safeName)
+        }
+    }
+
+    private fun saveExportWithMediaStore(bytes: ByteArray, safeName: String, mimeType: String): String {
+        val resolver = appContext.contentResolver
+        val values = ContentValues().apply {
+            put(MediaStore.MediaColumns.DISPLAY_NAME, safeName)
+            put(MediaStore.MediaColumns.MIME_TYPE, mimeType.ifBlank { "video/webm" })
+            put(MediaStore.MediaColumns.RELATIVE_PATH, "${Environment.DIRECTORY_DOWNLOADS}/danxe")
+            put(MediaStore.MediaColumns.IS_PENDING, 1)
+        }
+        val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+            ?: throw IllegalStateException("Unable to create export file in Download/danxe.")
+        resolver.openOutputStream(uri).use { output ->
+            requireNotNull(output) { "Unable to open export file in Download/danxe." }
+            output.write(bytes)
+        }
+        values.clear()
+        values.put(MediaStore.MediaColumns.IS_PENDING, 0)
+        resolver.update(uri, values, null, null)
+        return "Download/danxe/$safeName"
+    }
+
+    private fun saveExportLegacy(bytes: ByteArray, safeName: String): String {
+        val output = uniqueFile(ensureDownloadExportRoot(), safeName)
+        output.writeBytes(bytes)
+        return output.absolutePath
+    }
+
+    private fun uniqueFile(directory: File, fileName: String): File {
+        var candidate = File(directory, fileName)
+        if (!candidate.exists()) return candidate
+        val dot = fileName.lastIndexOf('.')
+        val base = if (dot > 0) fileName.substring(0, dot) else fileName
+        val extension = if (dot > 0) fileName.substring(dot) else ""
+        var index = 1
+        while (candidate.exists()) {
+            candidate = File(directory, "${base}_$index$extension")
+            index += 1
+        }
+        return candidate
+    }
+
     inner class AndroidBridge {
         @JavascriptInterface
         fun postStatus(payload: String) {
@@ -196,18 +263,15 @@ class MmdWebView(
                 val safeName = fileName.replace(Regex("[^A-Za-z0-9._-]"), "_").ifBlank {
                     "danxe_export.$extension"
                 }
-                val exports = File(libraryRoot, "exports")
-                exports.mkdirs()
-                val output = File(exports, safeName)
                 val bytes = Base64.decode(base64Video, Base64.DEFAULT)
-                output.writeBytes(bytes)
+                val outputPath = saveExport(bytes, safeName, mimeType)
                 main.post {
                     val payload = JSONObject()
                         .put("type", "exportComplete")
-                        .put("path", output.absolutePath)
+                        .put("path", outputPath)
                         .put("mimeType", mimeType)
                     events.invokeMethod("viewerStatus", payload.toString())
-                    MmdViewRegistry.pendingExportResult?.success(output.absolutePath)
+                    MmdViewRegistry.pendingExportResult?.success(outputPath)
                     MmdViewRegistry.pendingExportResult = null
                 }
             } catch (error: Exception) {

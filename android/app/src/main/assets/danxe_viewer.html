@@ -342,6 +342,37 @@
       postStatus();
     }
 
+    function setCameraPreset(payload) {
+      const preset = payload && payload.preset ? String(payload.preset) : 'fullFront';
+      if (state.cameraMotion) state.cameraMotion = false;
+      if (state.controls) state.controls.enabled = true;
+
+      let distance = state.manualCamera.distance;
+      let target = state.controls ? state.controls.target.clone() : new THREE.Vector3();
+      if (state.mesh && state.controls) {
+        const box = new THREE.Box3().setFromObject(state.mesh);
+        const size = box.getSize(new THREE.Vector3());
+        const center = box.getCenter(new THREE.Vector3());
+        const height = Math.max(size.y, 1);
+        if (preset === 'halfFront') {
+          target = new THREE.Vector3(center.x, box.min.y + height * 0.62, center.z);
+          distance = Math.max(height * 1.05, 10);
+        } else {
+          target = new THREE.Vector3(center.x, box.min.y + height * 0.50, center.z);
+          distance = Math.max(height * 1.9, 18);
+        }
+        state.controls.target.copy(target);
+      }
+
+      state.manualCamera = {
+        yaw: 0,
+        pitch: preset === 'halfFront' ? -2 : -4,
+        distance
+      };
+      applyManualCamera();
+      postStatus();
+    }
+
     function clear() {
       pause();
       resetScene();
@@ -485,6 +516,7 @@
       seek,
       setSpeed,
       setCamera,
+      setCameraPreset,
       exportVideo
     };
     initRenderer();

@@ -4,6 +4,7 @@ import android.app.Activity
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import android.os.Environment
 import android.provider.OpenableColumns
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
@@ -50,6 +51,7 @@ class MainActivity : FlutterActivity() {
                     "viewerSeek" -> viewerCommand("seek", result, JSONObject().put("second", call.argument<Double>("second") ?: 0.0))
                     "viewerSetSpeed" -> viewerCommand("setSpeed", result, JSONObject().put("speed", call.argument<Double>("speed") ?: 1.0))
                     "viewerSetCamera" -> viewerSetCamera(call, result)
+                    "viewerSetCameraPreset" -> viewerSetCameraPreset(call, result)
                     "viewerExport" -> viewerExport(call, result)
                     else -> result.notImplemented()
                 }
@@ -59,6 +61,7 @@ class MainActivity : FlutterActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         libraryRoot().mkdirs()
+        ensureDownloadExportRoot()
     }
 
     @Deprecated("Used for FlutterActivity compatibility without adding ActivityX dependencies.")
@@ -181,6 +184,12 @@ class MainActivity : FlutterActivity() {
             .put("pitch", call.argument<Double>("pitch") ?: -8.0)
             .put("distance", call.argument<Double>("distance") ?: 5.4)
         viewerCommand("setCamera", result, payload)
+    }
+
+    private fun viewerSetCameraPreset(call: MethodCall, result: MethodChannel.Result) {
+        val payload = JSONObject()
+            .put("preset", call.argument<String>("preset") ?: "fullFront")
+        viewerCommand("setCameraPreset", result, payload)
     }
 
     private fun viewerExport(call: MethodCall, result: MethodChannel.Result) {
@@ -319,6 +328,18 @@ class MainActivity : FlutterActivity() {
     }
 
     private fun libraryRoot(): File = File(filesDir, "danxe_library")
+
+    private fun ensureDownloadExportRoot(): File {
+        val root = File(
+            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
+            "danxe",
+        )
+        try {
+            root.mkdirs()
+        } catch (_: Exception) {
+        }
+        return root
+    }
 
     private fun assetDirectory(call: MethodCall): File {
         val kind = call.argument<String>("kind") ?: "other"

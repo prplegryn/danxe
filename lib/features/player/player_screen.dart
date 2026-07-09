@@ -13,6 +13,8 @@ import '../library/resource_library_controller.dart';
 import '../logs/app_log_controller.dart';
 import 'player_controller.dart';
 
+enum _QuickMenu { camera, apply }
+
 class PlayerScreen extends StatefulWidget {
   const PlayerScreen({super.key});
 
@@ -28,6 +30,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
   late final AppLogController _logs;
 
   bool _exporting = false;
+  _QuickMenu? _openQuickMenu;
   String? _lastSceneSignature;
   String? _lastLibraryError;
 
@@ -143,74 +146,40 @@ class _PlayerScreenState extends State<PlayerScreen> {
       builder: (context, _) {
         return Scaffold(
           body: LayoutBuilder(
-            builder: (context, constraints) {
+            builder: (context, _) {
               final safe = MediaQuery.paddingOf(context);
-              final compact = constraints.maxWidth < 560;
               final bottom = safe.bottom + 16;
-              final top = safe.top + 12;
 
               return Stack(
                 children: [
                   const Positioned.fill(child: NativeMmdViewport()),
                   Positioned(
                     left: 16,
-                    right: compact ? 84 : 132,
-                    top: top,
-                    child: Align(
-                      alignment: Alignment.topLeft,
-                      child: _SceneHud(
-                        model: _library.selectedModel,
-                        motion: _library.selectedMotion,
-                        camera: _library.selectedCamera,
-                        audio: _library.selectedAudio,
-                        face: _library.selectedFace,
-                        player: _player,
-                        busy: _library.busy,
-                      ),
-                    ),
-                  ),
-                  Positioned(
-                    right: 20,
-                    top: top,
-                    child: _RoundToolButton(
-                      tooltip: 'Camera',
-                      icon: Icons.photo_camera_rounded,
-                      onPressed: _showCameraSheet,
-                    ),
-                  ),
-                  Positioned(
-                    left: 16,
-                    right: compact ? 132 : 164,
                     bottom: bottom,
-                    child: _TransportBar(
-                      compact: compact,
+                    child: _MiniTransportCapsule(
                       player: _player,
                       exporting: _exporting,
                       canExport: _library.selectedModel?.hasRenderableModel ?? false,
                       onToggle: _togglePlayback,
-                      onSeek: _seek,
-                      onSpeed: _setSpeed,
-                      onExport: _showExportSheet,
+                      onExport: () {
+                        _closeQuickMenu();
+                        _showExportSheet();
+                      },
                     ),
                   ),
                   Positioned(
                     right: 20,
-                    bottom: bottom + 82,
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        _DockButton(
-                          icon: Icons.layers_rounded,
-                          label: 'Apply',
-                          onPressed: _showApplySheet,
-                        ),
-                        const SizedBox(height: 12),
-                        _DockButton(
-                          icon: Icons.receipt_long_rounded,
-                          label: 'Log',
-                          onPressed: _showLogSheet,
-                        ),
-                      ],
+                    bottom: bottom,
+                    child: _QuickActionDock(
+                      openMenu: _openQuickMenu,
+                      onToggleMenu: _toggleQuickMenu,
+                      onApplyKind: _openAssetPickerFromDock,
+                      onOpenLibrary: _openLibraryFromDock,
+                      onLog: () {
+                        _closeQuickMenu();
+                        _showLogSheet();
+                      },
+                      onCameraPreset: _applyCameraPreset,
                     ),
                   ),
                 ],
@@ -252,6 +221,33 @@ class _PlayerScreenState extends State<PlayerScreen> {
       pitch: _player.pitch,
       distance: _player.distance,
     );
+  }
+
+  void _toggleQuickMenu(_QuickMenu menu) {
+    setState(() {
+      _openQuickMenu = _openQuickMenu == menu ? null : menu;
+    });
+  }
+
+  void _closeQuickMenu() {
+    if (_openQuickMenu == null) return;
+    setState(() => _openQuickMenu = null);
+  }
+
+  void _openAssetPickerFromDock(AssetKind kind) {
+    _closeQuickMenu();
+    _showAssetPicker(kind);
+  }
+
+  void _openLibraryFromDock() {
+    _closeQuickMenu();
+    _showLibraryManager();
+  }
+
+  Future<void> _applyCameraPreset(String preset) async {
+    _closeQuickMenu();
+    await _bridge.viewerSetCameraPreset(preset);
+    _logs.info('camera', preset == 'halfFront' ? 'Applied half-front preset.' : 'Applied full-front preset.');
   }
 
   Future<void> _showApplySheet() async {
@@ -1046,6 +1042,271 @@ class _SceneHud extends StatelessWidget {
       if (face != null) 'Face: ${face.name}',
     ];
     return parts.join('  /  ');
+  }
+}
+
+class _MiniTransportCapsule extends StatelessWidget {
+  const _MiniTransportCapsule({
+    required this.player,
+    required this.exporting,
+    required this.canExport,
+    required this.onToggle,
+    required this.onExport,
+  });
+
+  final PlayerController player;
+  final bool exporting;
+  final bool canExport;
+  final VoidCallback onToggle;
+  final VoidCallback onExport;
+
+  @override
+  Widget build(BuildContext context) {
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: AppColors.surface.withOpacity(0.9),
+        border: Border.all(color: AppColors.line),
+        borderRadius: BorderRadius.circular(999),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.26),
+            blurRadius: 22,
+            offset: const Offset(0, 10),
+          ),
+        ],
+      ),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            _CircleIconButton(
+              tooltip: player.playing ? 'Pause' : 'Play',
+              icon: player.playing ? Icons.pause_rounded : Icons.play_arrow_rounded,
+              selected: player.playing,
+              onPressed: player.loaded ? onToggle : null,
+            ),
+            const SizedBox(width: 6),
+            _CircleIconButton(
+              tooltip: 'Export',
+              icon: exporting ? null : Icons.file_download_rounded,
+              busy: exporting,
+              onPressed: canExport && player.loaded && !exporting ? onExport : null,
+            ),
+            const SizedBox(width: 10),
+            Padding(
+              padding: const EdgeInsets.only(right: 8),
+              child: Text(
+                player.timeLabel,
+                style: const TextStyle(
+                  fontSize: 12,
+                  color: AppColors.text,
+                  fontFeatures: [FontFeature.tabularFigures()],
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _QuickActionDock extends StatelessWidget {
+  const _QuickActionDock({
+    required this.openMenu,
+    required this.onToggleMenu,
+    required this.onApplyKind,
+    required this.onOpenLibrary,
+    required this.onLog,
+    required this.onCameraPreset,
+  });
+
+  final _QuickMenu? openMenu;
+  final ValueChanged<_QuickMenu> onToggleMenu;
+  final ValueChanged<AssetKind> onApplyKind;
+  final VoidCallback onOpenLibrary;
+  final VoidCallback onLog;
+  final ValueChanged<String> onCameraPreset;
+
+  @override
+  Widget build(BuildContext context) {
+    final maxActionsWidth = MediaQuery.sizeOf(context).width - 100;
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.end,
+      children: [
+        _ExpandableDockRow(
+          maxActionsWidth: maxActionsWidth,
+          open: openMenu == _QuickMenu.camera,
+          actions: [
+            _CircleIconButton(
+              tooltip: 'Full front',
+              icon: Icons.accessibility_new_rounded,
+              onPressed: () => onCameraPreset('fullFront'),
+            ),
+            _CircleIconButton(
+              tooltip: 'Half front',
+              icon: Icons.portrait_rounded,
+              onPressed: () => onCameraPreset('halfFront'),
+            ),
+          ],
+          anchor: _CircleIconButton(
+            tooltip: 'Camera presets',
+            icon: Icons.video_camera_front_rounded,
+            selected: openMenu == _QuickMenu.camera,
+            onPressed: () => onToggleMenu(_QuickMenu.camera),
+          ),
+        ),
+        const SizedBox(height: 12),
+        _ExpandableDockRow(
+          maxActionsWidth: maxActionsWidth,
+          open: openMenu == _QuickMenu.apply,
+          actions: [
+            _CircleIconButton(
+              tooltip: 'Apply model',
+              icon: _iconForKind(AssetKind.model),
+              onPressed: () => onApplyKind(AssetKind.model),
+            ),
+            _CircleIconButton(
+              tooltip: 'Apply motion',
+              icon: _iconForKind(AssetKind.motion),
+              onPressed: () => onApplyKind(AssetKind.motion),
+            ),
+            _CircleIconButton(
+              tooltip: 'Apply camera',
+              icon: _iconForKind(AssetKind.camera),
+              onPressed: () => onApplyKind(AssetKind.camera),
+            ),
+            _CircleIconButton(
+              tooltip: 'Apply audio',
+              icon: _iconForKind(AssetKind.audio),
+              onPressed: () => onApplyKind(AssetKind.audio),
+            ),
+            _CircleIconButton(
+              tooltip: 'Apply face',
+              icon: _iconForKind(AssetKind.face),
+              onPressed: () => onApplyKind(AssetKind.face),
+            ),
+            _CircleIconButton(
+              tooltip: 'Library',
+              icon: Icons.inventory_2_rounded,
+              onPressed: onOpenLibrary,
+            ),
+          ],
+          anchor: _CircleIconButton(
+            tooltip: 'Apply',
+            icon: Icons.layers_rounded,
+            selected: openMenu == _QuickMenu.apply,
+            onPressed: () => onToggleMenu(_QuickMenu.apply),
+          ),
+        ),
+        const SizedBox(height: 12),
+        _CircleIconButton(
+          tooltip: 'Log',
+          icon: Icons.receipt_long_rounded,
+          onPressed: onLog,
+        ),
+      ],
+    );
+  }
+}
+
+class _ExpandableDockRow extends StatelessWidget {
+  const _ExpandableDockRow({
+    required this.open,
+    required this.actions,
+    required this.anchor,
+    required this.maxActionsWidth,
+  });
+
+  final bool open;
+  final List<Widget> actions;
+  final Widget anchor;
+  final double maxActionsWidth;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        ClipRect(
+          child: AnimatedAlign(
+            alignment: Alignment.centerRight,
+            widthFactor: open ? 1 : 0,
+            duration: const Duration(milliseconds: 180),
+            curve: Curves.easeOutCubic,
+            child: ConstrainedBox(
+              constraints: BoxConstraints(
+                maxWidth: maxActionsWidth.clamp(160.0, 320.0).toDouble(),
+              ),
+              child: SingleChildScrollView(
+                reverse: true,
+                scrollDirection: Axis.horizontal,
+                physics: const BouncingScrollPhysics(),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    for (var index = 0; index < actions.length; index++) ...[
+                      if (index > 0) const SizedBox(width: 6),
+                      actions[index],
+                    ],
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+        AnimatedSize(
+          duration: const Duration(milliseconds: 180),
+          curve: Curves.easeOutCubic,
+          child: SizedBox(width: open ? 10 : 0),
+        ),
+        anchor,
+      ],
+    );
+  }
+}
+
+class _CircleIconButton extends StatelessWidget {
+  const _CircleIconButton({
+    required this.tooltip,
+    required this.onPressed,
+    this.icon,
+    this.selected = false,
+    this.busy = false,
+  });
+
+  final String tooltip;
+  final IconData? icon;
+  final VoidCallback? onPressed;
+  final bool selected;
+  final bool busy;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox.square(
+      dimension: 48,
+      child: IconButton(
+        tooltip: tooltip,
+        onPressed: busy ? null : onPressed,
+        style: IconButton.styleFrom(
+          shape: const CircleBorder(),
+          backgroundColor: selected ? AppColors.primary : AppColors.surfaceHigh.withOpacity(0.94),
+          disabledBackgroundColor: AppColors.surfaceHigh.withOpacity(0.48),
+          foregroundColor: AppColors.text,
+          disabledForegroundColor: AppColors.textMuted.withOpacity(0.52),
+          side: const BorderSide(color: AppColors.line),
+        ),
+        icon: busy
+            ? const SizedBox.square(
+                dimension: 18,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              )
+            : Icon(icon, size: 22),
+      ),
+    );
   }
 }
 

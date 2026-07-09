@@ -147,6 +147,13 @@ class HostBridge {
     );
   }
 
+  Future<void> viewerSetCameraPreset(String preset) {
+    return _channel.invokeMethod<void>(
+      'viewerSetCameraPreset',
+      <String, Object?>{'preset': preset},
+    );
+  }
+
   Future<String> viewerExport(ExportSettings settings) async {
     final path = await _channel.invokeMethod<String>(
       'viewerExport',
