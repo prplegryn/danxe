@@ -1163,17 +1163,11 @@ vec3 danxeApplyLook(vec3 color) {
       state.renderer.setSize(width, height, false);
       resizeCamera(width, height);
       const chunks = [];
-      let stream = canvas.captureStream(fps);
-      let videoTrack = stream.getVideoTracks()[0];
-      if (videoTrack && videoTrack.requestFrame) {
-        stream.getTracks().forEach((track) => track.stop());
-        stream = canvas.captureStream(0);
-        videoTrack = stream.getVideoTracks()[0];
-      }
+      const stream = canvas.captureStream(fps);
       const format = pickRecordingFormat();
       if (!format) {
         stream.getTracks().forEach((track) => track.stop());
-        exportError('This WebView does not support MP4 canvas recording.');
+        exportError('This WebView does not support canvas video recording formats.');
         return;
       }
       const recorderOptions = {
@@ -1185,7 +1179,7 @@ vec3 danxeApplyLook(vec3 color) {
         recorder = new MediaRecorder(stream, recorderOptions);
       } catch (error) {
         stream.getTracks().forEach((track) => track.stop());
-        exportError(error && error.message ? error.message : 'Unable to start MP4 recorder.');
+        exportError(error && error.message ? error.message : 'Unable to start video recorder.');
         return;
       }
       state.recorder = recorder;
@@ -1219,34 +1213,49 @@ vec3 danxeApplyLook(vec3 color) {
       };
       post({ type: 'exportStarted', seconds, fps, width, height, mimeType: format.mimeType });
       state.playing = false;
+      setHelperTime(0);
+      renderExportFrame();
       recorder.start(1000);
-      await recordFrames({
-        fps,
-        seconds,
-        requestFrame: videoTrack && videoTrack.requestFrame ? () => videoTrack.requestFrame() : null
-      });
+      await waitForRecorderStart(recorder);
+      await recordFrames({ fps, seconds });
       if (recorder.state !== 'inactive') {
         if (recorder.requestData) recorder.requestData();
-        await wait(80);
+        await wait(240);
         recorder.stop();
       }
     }
 
-    async function recordFrames({ fps, seconds, requestFrame }) {
+    async function waitForRecorderStart(recorder) {
+      if (!recorder || recorder.state === 'recording') return;
+      await new Promise((resolve) => {
+        const done = () => resolve();
+        recorder.addEventListener('start', done, { once: true });
+        setTimeout(done, 180);
+      });
+    }
+
+    async function recordFrames({ fps, seconds }) {
       const totalFrames = Math.max(1, Math.round(seconds * fps));
       const frameDuration = 1 / fps;
       const frameDelay = 1000 / fps;
-      setHelperTime(0);
-      await wait(80);
+      await nextFrame();
       for (let frame = 0; frame < totalFrames; frame++) {
         if (!state.recorder || state.recorder.state === 'inactive') break;
         if (frame > 0) advanceAnimation(frameDuration);
-        if (state.renderer && state.scene && state.camera) {
-          state.renderer.render(state.scene, state.camera);
-        }
-        if (requestFrame) requestFrame();
+        renderExportFrame();
         await wait(frameDelay);
       }
+    }
+
+    function renderExportFrame() {
+      if (state.controls && !state.cameraMotion) state.controls.update();
+      if (state.renderer && state.scene && state.camera) {
+        state.renderer.render(state.scene, state.camera);
+      }
+    }
+
+    function nextFrame() {
+      return new Promise((resolve) => requestAnimationFrame(() => resolve()));
     }
 
     function wait(milliseconds) {
@@ -1262,6 +1271,9 @@ vec3 danxeApplyLook(vec3 color) {
 
     function pickRecordingFormat() {
       const formats = [
+        { mimeType: 'video/webm;codecs=vp9', extension: 'webm' },
+        { mimeType: 'video/webm;codecs=vp8', extension: 'webm' },
+        { mimeType: 'video/webm', extension: 'webm' },
         { mimeType: 'video/mp4;codecs=avc1.42E01E', extension: 'mp4' },
         { mimeType: 'video/mp4;codecs=avc1.42001E', extension: 'mp4' },
         { mimeType: 'video/mp4;codecs=h264', extension: 'mp4' },
