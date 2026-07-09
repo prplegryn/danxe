@@ -45,6 +45,7 @@
 <body>
   <div id="stage"></div>
   <div id="status">Renderer ready. Select a PMX model.</div>
+  <script src="./vendor/examples/jsm/libs/ammo.wasm.js"></script>
   <script type="module">
     import * as THREE from 'three';
     import { MMDLoader } from 'three/addons/loaders/MMDLoader.js';
@@ -72,8 +73,21 @@
       cameraMotion: false,
       manualCamera: { yaw: 18, pitch: -8, distance: 5.4 },
       modelUrl: null,
+      physicsReady: false,
+      physicsEnabled: false,
+      physicsWarningShown: false,
       recorder: null
     };
+    let ammoReadyPromise = null;
+
+    const physicsParams = {
+      physics: true,
+      warmup: 120,
+      unitStep: 1 / 65,
+      maxStepNum: 5,
+      gravity: new THREE.Vector3(0, -98, 0)
+    };
+    const physicsFrameStep = 1 / 60;
 
     function post(payload) {
       if (window.DanxeAndroid && window.DanxeAndroid.postStatus) {
@@ -85,6 +99,38 @@
       statusEl.textContent = text;
       statusEl.classList.toggle('hidden', hidden);
       post({ type: 'message', message: text, hidden });
+    }
+
+    async function ensurePhysicsReady() {
+      if (state.physicsReady) return true;
+      if (globalThis.Ammo && globalThis.Ammo.btVector3) {
+        state.physicsReady = true;
+        return true;
+      }
+      if (typeof globalThis.Ammo !== 'function') {
+        postPhysicsWarning('Ammo physics runtime is unavailable.');
+        return false;
+      }
+      if (!ammoReadyPromise) {
+        ammoReadyPromise = globalThis.Ammo({
+          locateFile: (file) => `./vendor/examples/jsm/libs/${file}`
+        }).then((ammo) => {
+          globalThis.Ammo = ammo;
+          state.physicsReady = true;
+          post({ type: 'message', message: 'MMD physics ready.', hidden: true });
+          return true;
+        }).catch((error) => {
+          postPhysicsWarning(error && error.message ? error.message : String(error));
+          return false;
+        });
+      }
+      return ammoReadyPromise;
+    }
+
+    function postPhysicsWarning(message) {
+      if (state.physicsWarningShown) return;
+      state.physicsWarningShown = true;
+      post({ type: 'message', message: `MMD physics disabled: ${message}`, hidden: true });
     }
 
     function initRenderer() {
@@ -130,8 +176,7 @@
       if (state.audio) {
         try { state.audio.stop(); } catch (_) {}
       }
-      state.helper = new MMDAnimationHelper({ sync: true, pmxAnimation: true });
-      state.helper.enable('physics', false);
+      state.helper = createAnimationHelper();
       state.mesh = null;
       state.audio = null;
       state.current = 0;
@@ -139,7 +184,18 @@
       state.playing = false;
       state.loaded = false;
       state.cameraMotion = false;
+      state.physicsEnabled = false;
       if (state.controls) state.controls.enabled = true;
+    }
+
+    function createAnimationHelper() {
+      const helper = new MMDAnimationHelper({
+        sync: true,
+        pmxAnimation: true,
+        resetPhysicsOnLoop: true
+      });
+      helper.enable('physics', true);
+      return helper;
     }
 
     function disposeObject(object) {
@@ -175,13 +231,14 @@
       loader.setCrossOrigin('anonymous');
 
       try {
+        const physicsReady = await ensurePhysicsReady();
         const motionUrls = Array.isArray(input.motionUrls) ? input.motionUrls : [];
         const cameraUrls = Array.isArray(input.cameraUrls) ? input.cameraUrls : [];
         const mmd = await loadModelAndMotion(loader, input.modelUrl, motionUrls);
         state.mesh = mmd.mesh;
         state.mesh.frustumCulled = false;
         state.scene.add(state.mesh);
-        state.helper.add(state.mesh, { animation: mmd.animation, physics: false });
+        state.physicsEnabled = addMeshToHelper(state.mesh, mmd.animation, physicsReady);
         state.duration = Math.max(state.duration, animationDuration(mmd.animation));
         state.modelUrl = input.modelUrl;
 
@@ -208,6 +265,7 @@
         state.loading = false;
         state.current = 0;
         setHelperTime(0);
+        stabilizePhysics(30);
         setStatus('', true);
         postStatus();
       } catch (error) {
@@ -216,6 +274,25 @@
         const message = error && error.message ? error.message : String(error);
         setStatus('Renderer error:\n' + message);
         post({ type: 'error', message });
+      }
+    }
+
+    function addMeshToHelper(mesh, animation, physicsReady) {
+      if (!physicsReady) {
+        state.helper.add(mesh, { animation, physics: false });
+        state.helper.enable('physics', false);
+        return false;
+      }
+      try {
+        state.helper.add(mesh, { animation, ...physicsParams });
+        state.helper.enable('physics', true);
+        return true;
+      } catch (error) {
+        state.helper = createAnimationHelper();
+        state.helper.add(mesh, { animation, physics: false });
+        state.helper.enable('physics', false);
+        postPhysicsWarning(error && error.message ? error.message : String(error));
+        return false;
       }
     }
 
@@ -302,7 +379,7 @@
       state.controls.update();
     }
 
-    function setHelperTime(second) {
+    function setHelperTime(second, stabilize = true) {
       state.current = Math.max(0, Math.min(second, Math.max(state.duration, 0)));
       if (!state.helper) return;
       for (const mesh of state.helper.meshes) {
@@ -314,6 +391,18 @@
         if (object && object.mixer) object.mixer.setTime(state.current);
       }
       state.helper.update(0);
+      if (stabilize) stabilizePhysics(18);
+    }
+
+    function stabilizePhysics(cycles = 18) {
+      if (!state.physicsEnabled || !state.helper) return;
+      for (const mesh of state.helper.meshes) {
+        const object = state.helper.objects.get(mesh);
+        if (object && object.physics) {
+          object.physics.reset();
+          object.physics.warmup(cycles);
+        }
+      }
     }
 
     function play() {
@@ -507,10 +596,11 @@
       const totalFrames = Math.max(1, Math.round(seconds * fps));
       const frameDuration = 1 / fps;
       const frameDelay = 1000 / fps;
+      setHelperTime(0);
       await wait(80);
       for (let frame = 0; frame < totalFrames; frame++) {
         if (!state.recorder || state.recorder.state === 'inactive') break;
-        setHelperTime(frame * frameDuration);
+        if (frame > 0) advanceAnimation(frameDuration);
         if (state.renderer && state.scene && state.camera) {
           state.renderer.render(state.scene, state.camera);
         }
@@ -542,7 +632,7 @@
 
     function tick() {
       requestAnimationFrame(tick);
-      const delta = Math.min(clock.getDelta(), 1 / 15);
+      const delta = Math.min(clock.getDelta(), 1 / 10);
       if (state.loaded && state.playing && state.duration > 0) {
         advanceAnimation(delta * state.speed);
       }
@@ -554,14 +644,19 @@
 
     function advanceAnimation(delta) {
       if (!state.helper || delta <= 0) return;
-      const next = state.current + delta;
-      if (next >= state.duration) {
-        const wrapped = state.duration > 0 ? next % state.duration : 0;
-        setHelperTime(wrapped);
-        restartAudioAtCurrent();
-      } else {
-        state.helper.update(delta);
-        state.current = next;
+      let remaining = delta;
+      while (remaining > 0) {
+        const step = Math.min(remaining, physicsFrameStep);
+        const next = state.current + step;
+        if (next >= state.duration) {
+          const wrapped = state.duration > 0 ? next % state.duration : 0;
+          setHelperTime(wrapped);
+          restartAudioAtCurrent();
+        } else {
+          state.helper.update(step);
+          state.current = next;
+        }
+        remaining -= step;
       }
     }
 
@@ -584,7 +679,8 @@
         current: state.current,
         duration: state.duration,
         speed: state.speed,
-        cameraMotion: state.cameraMotion
+        cameraMotion: state.cameraMotion,
+        physics: state.physicsEnabled
       });
     }
 

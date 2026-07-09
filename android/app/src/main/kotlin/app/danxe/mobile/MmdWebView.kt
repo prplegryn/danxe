@@ -39,7 +39,7 @@ class MmdWebView(
     init {
         ensureDownloadExportRoot()
         configureWebView()
-        webView.loadUrl("file:///android_asset/danxe_viewer.html")
+        webView.loadUrl("https://$virtualHost/danxe_viewer.html")
     }
 
     override fun getView(): View = webView
@@ -89,7 +89,7 @@ class MmdWebView(
             ): WebResourceResponse? {
                 val url = request?.url ?: return null
                 if (url.scheme != "https" || url.host != virtualHost) return null
-                return openVirtualLibraryFile(url)
+                return openVirtualFile(url)
             }
         }
         webView.addJavascriptInterface(AndroidBridge(), "DanxeAndroid")
@@ -106,7 +106,7 @@ class MmdWebView(
         }
     }
 
-    private fun openVirtualLibraryFile(uri: Uri): WebResourceResponse {
+    private fun openVirtualFile(uri: Uri): WebResourceResponse {
         try {
             val segments = uri.pathSegments
                 .dropWhile { it.isEmpty() }
@@ -116,35 +116,60 @@ class MmdWebView(
             if (segments.any { it == ".." }) {
                 return textResponse(403, "Forbidden", "Blocked unsafe Danxe resource.")
             }
-            if (segments.firstOrNull() != "library" || segments.size < 4) {
-                return textResponse(404, "Not Found", "Unknown Danxe resource.")
+            if (segments.firstOrNull() == "library") {
+                return openVirtualLibraryFile(segments)
             }
-
-            var target = libraryRoot
-            for (segment in segments.drop(1)) {
-                target = File(target, segment)
-            }
-
-            val rootPath = libraryRoot.canonicalPath
-            val targetFile = target.canonicalFile
-            if (!targetFile.path.startsWith(rootPath + File.separator)) {
-                return textResponse(403, "Forbidden", "Blocked unsafe Danxe resource.")
-            }
-            if (!targetFile.isFile) {
-                return textResponse(404, "Not Found", "Danxe resource not found.")
-            }
-
-            return WebResourceResponse(
-                mimeTypeForFile(targetFile),
-                null,
-                200,
-                "OK",
-                corsHeaders(),
-                targetFile.inputStream(),
-            )
+            return openVirtualAssetFile(segments)
         } catch (error: Exception) {
             return textResponse(500, "Internal Server Error", error.message ?: "Failed to read Danxe resource.")
         }
+    }
+
+    private fun openVirtualAssetFile(segments: List<String>): WebResourceResponse {
+        if (segments.isEmpty()) {
+            return textResponse(404, "Not Found", "Unknown Danxe resource.")
+        }
+        val assetPath = segments.joinToString("/")
+        if (assetPath != "danxe_viewer.html" && !assetPath.startsWith("vendor/")) {
+            return textResponse(404, "Not Found", "Unknown Danxe resource.")
+        }
+        return WebResourceResponse(
+            mimeTypeForAsset(assetPath),
+            null,
+            200,
+            "OK",
+            corsHeaders(),
+            appContext.assets.open(assetPath),
+        )
+    }
+
+    private fun openVirtualLibraryFile(segments: List<String>): WebResourceResponse {
+        if (segments.size < 4) {
+            return textResponse(404, "Not Found", "Unknown Danxe resource.")
+        }
+
+        var target = libraryRoot
+        for (segment in segments.drop(1)) {
+            target = File(target, segment)
+        }
+
+        val rootPath = libraryRoot.canonicalPath
+        val targetFile = target.canonicalFile
+        if (!targetFile.path.startsWith(rootPath + File.separator)) {
+            return textResponse(403, "Forbidden", "Blocked unsafe Danxe resource.")
+        }
+        if (!targetFile.isFile) {
+            return textResponse(404, "Not Found", "Danxe resource not found.")
+        }
+
+        return WebResourceResponse(
+            mimeTypeForFile(targetFile),
+            null,
+            200,
+            "OK",
+            corsHeaders(),
+            targetFile.inputStream(),
+        )
     }
 
     private fun textResponse(status: Int, reason: String, body: String): WebResourceResponse {
@@ -179,6 +204,16 @@ class MmdWebView(
             "m4a", "aac" -> "audio/mp4"
             "flac" -> "audio/flac"
             "ogg" -> "audio/ogg"
+            else -> "application/octet-stream"
+        }
+    }
+
+    private fun mimeTypeForAsset(path: String): String {
+        return when (path.substringAfterLast('.', "").lowercase(Locale.US)) {
+            "html" -> "text/html"
+            "js" -> "application/javascript"
+            "wasm" -> "application/wasm"
+            "json" -> "application/json"
             else -> "application/octet-stream"
         }
     }

@@ -54,6 +54,8 @@ jobs:
           curl -fsSL "$base/examples/jsm/controls/OrbitControls.js" -o "$root/examples/jsm/controls/OrbitControls.js"
           curl -fsSL "$base/examples/jsm/shaders/MMDToonShader.js" -o "$root/examples/jsm/shaders/MMDToonShader.js"
           curl -fsSL "$base/examples/jsm/libs/mmdparser.module.js" -o "$root/examples/jsm/libs/mmdparser.module.js"
+          curl -fsSL "$base/examples/jsm/libs/ammo.wasm.js" -o "$root/examples/jsm/libs/ammo.wasm.js"
+          curl -fsSL "$base/examples/jsm/libs/ammo.wasm.wasm" -o "$root/examples/jsm/libs/ammo.wasm.wasm"
 
       - name: Build release APK
         run: flutter build apk --release
