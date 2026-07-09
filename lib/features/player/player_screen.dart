@@ -15,6 +15,180 @@ import 'player_controller.dart';
 
 enum _QuickMenu { camera, apply }
 
+class _LookSettings {
+  const _LookSettings({
+    required this.preset,
+    required this.enabled,
+    required this.exposure,
+    required this.contrast,
+    required this.saturation,
+    required this.brightness,
+    required this.ambient,
+    required this.key,
+    required this.rim,
+    required this.specular,
+    required this.shininess,
+    required this.toon,
+    required this.texture,
+    required this.floor,
+  });
+
+  final String preset;
+  final bool enabled;
+  final double exposure;
+  final double contrast;
+  final double saturation;
+  final double brightness;
+  final double ambient;
+  final double key;
+  final double rim;
+  final double specular;
+  final double shininess;
+  final double toon;
+  final double texture;
+  final bool floor;
+
+  static const balanced = _LookSettings(
+    preset: 'balanced',
+    enabled: true,
+    exposure: 1.12,
+    contrast: 1.06,
+    saturation: 1.10,
+    brightness: 1.02,
+    ambient: 1.55,
+    key: 2.35,
+    rim: 0.55,
+    specular: 0.60,
+    shininess: 34,
+    toon: 1.00,
+    texture: 1.00,
+    floor: true,
+  );
+
+  static const clear = _LookSettings(
+    preset: 'clear',
+    enabled: true,
+    exposure: 1.08,
+    contrast: 1.12,
+    saturation: 1.08,
+    brightness: 1.04,
+    ambient: 1.72,
+    key: 2.20,
+    rim: 0.38,
+    specular: 0.44,
+    shininess: 28,
+    toon: 0.96,
+    texture: 1.04,
+    floor: true,
+  );
+
+  static const vivid = _LookSettings(
+    preset: 'vivid',
+    enabled: true,
+    exposure: 1.18,
+    contrast: 1.16,
+    saturation: 1.24,
+    brightness: 1.03,
+    ambient: 1.42,
+    key: 2.55,
+    rim: 0.76,
+    specular: 0.70,
+    shininess: 42,
+    toon: 1.06,
+    texture: 1.10,
+    floor: true,
+  );
+
+  static const stage = _LookSettings(
+    preset: 'stage',
+    enabled: true,
+    exposure: 1.26,
+    contrast: 1.10,
+    saturation: 1.16,
+    brightness: 1.01,
+    ambient: 1.18,
+    key: 2.85,
+    rim: 1.05,
+    specular: 0.78,
+    shininess: 50,
+    toon: 1.02,
+    texture: 1.04,
+    floor: true,
+  );
+
+  static _LookSettings forPreset(String preset, _LookSettings current) {
+    final next = switch (preset) {
+      'clear' => clear,
+      'vivid' => vivid,
+      'stage' => stage,
+      _ => balanced,
+    };
+    return next.copyWith(enabled: current.enabled, floor: current.floor);
+  }
+
+  String get presetLabel {
+    return switch (preset) {
+      'clear' => 'Clear',
+      'vivid' => 'Vivid',
+      'stage' => 'Stage',
+      _ => 'Balanced',
+    };
+  }
+
+  Map<String, Object?> toJson() {
+    return <String, Object?>{
+      'preset': preset,
+      'enabled': enabled,
+      'exposure': exposure,
+      'contrast': contrast,
+      'saturation': saturation,
+      'brightness': brightness,
+      'ambient': ambient,
+      'key': key,
+      'rim': rim,
+      'specular': specular,
+      'shininess': shininess,
+      'toon': toon,
+      'texture': texture,
+      'floor': floor,
+    };
+  }
+
+  _LookSettings copyWith({
+    String? preset,
+    bool? enabled,
+    double? exposure,
+    double? contrast,
+    double? saturation,
+    double? brightness,
+    double? ambient,
+    double? key,
+    double? rim,
+    double? specular,
+    double? shininess,
+    double? toon,
+    double? texture,
+    bool? floor,
+  }) {
+    return _LookSettings(
+      preset: preset ?? this.preset,
+      enabled: enabled ?? this.enabled,
+      exposure: exposure ?? this.exposure,
+      contrast: contrast ?? this.contrast,
+      saturation: saturation ?? this.saturation,
+      brightness: brightness ?? this.brightness,
+      ambient: ambient ?? this.ambient,
+      key: key ?? this.key,
+      rim: rim ?? this.rim,
+      specular: specular ?? this.specular,
+      shininess: shininess ?? this.shininess,
+      toon: toon ?? this.toon,
+      texture: texture ?? this.texture,
+      floor: floor ?? this.floor,
+    );
+  }
+}
+
 class PlayerScreen extends StatefulWidget {
   const PlayerScreen({super.key});
 
@@ -31,6 +205,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
   bool _exporting = false;
   bool _uiHidden = false;
+  _LookSettings _look = _LookSettings.balanced;
   _QuickMenu? _openQuickMenu;
   String? _lastSceneSignature;
   String? _lastLibraryError;
@@ -190,6 +365,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
                         onApplyKind: _openAssetPickerFromDock,
                         onOpenLibrary: _openLibraryFromDock,
                         onHideUi: _hideUi,
+                        onLook: () {
+                          _closeQuickMenu();
+                          _showLookSheet();
+                        },
                         onLog: () {
                           _closeQuickMenu();
                           _showLogSheet();
@@ -275,6 +454,165 @@ class _PlayerScreenState extends State<PlayerScreen> {
     _closeQuickMenu();
     await _bridge.viewerSetCameraPreset(preset);
     _logs.info('camera', preset == 'halfFront' ? 'Applied half-front preset.' : 'Applied full-front preset.');
+  }
+
+  void _setLook(_LookSettings look, {bool log = false}) {
+    setState(() => _look = look);
+    _bridge.viewerSetLook(look.toJson()).catchError((Object error) {
+      _logs.error('look', error.toString());
+    });
+    if (log) {
+      _logs.info('look', 'Applied ${look.presetLabel} look.');
+    }
+  }
+
+  Future<void> _showLookSheet() async {
+    var draft = _look;
+    await showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      isScrollControlled: true,
+      backgroundColor: AppColors.surface,
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setSheetState) {
+            void update(_LookSettings next, {bool log = false}) {
+              setSheetState(() => draft = next);
+              _setLook(next, log: log);
+            }
+
+            return FractionallySizedBox(
+              heightFactor: 0.84,
+              child: SafeArea(
+                top: false,
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 4, 20, 20),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      _SheetHeader(
+                        title: 'Look',
+                        action: IconButton.filledTonal(
+                          tooltip: 'Reset look',
+                          onPressed: () => update(_LookSettings.balanced, log: true),
+                          icon: const Icon(Icons.restart_alt_rounded),
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+                      _LookSwitch(
+                        title: 'Enable tuning',
+                        value: draft.enabled,
+                        onChanged: (value) => update(draft.copyWith(enabled: value)),
+                      ),
+                      _LookSwitch(
+                        title: 'Floor grid',
+                        value: draft.floor,
+                        onChanged: (value) => update(draft.copyWith(floor: value)),
+                      ),
+                      const SizedBox(height: 12),
+                      _LookPresetRow(
+                        value: draft.preset,
+                        onSelected: (preset) {
+                          update(_LookSettings.forPreset(preset, draft), log: true);
+                        },
+                      ),
+                      const SizedBox(height: 14),
+                      Expanded(
+                        child: SingleChildScrollView(
+                          physics: const BouncingScrollPhysics(),
+                          child: Column(
+                            children: [
+                              _LookSlider(
+                                label: 'Exposure',
+                                value: draft.exposure,
+                                min: 0.75,
+                                max: 1.55,
+                                onChanged: (value) => update(draft.copyWith(exposure: value)),
+                              ),
+                              _LookSlider(
+                                label: 'Contrast',
+                                value: draft.contrast,
+                                min: 0.85,
+                                max: 1.35,
+                                onChanged: (value) => update(draft.copyWith(contrast: value)),
+                              ),
+                              _LookSlider(
+                                label: 'Saturation',
+                                value: draft.saturation,
+                                min: 0.75,
+                                max: 1.45,
+                                onChanged: (value) => update(draft.copyWith(saturation: value)),
+                              ),
+                              _LookSlider(
+                                label: 'Brightness',
+                                value: draft.brightness,
+                                min: 0.85,
+                                max: 1.25,
+                                onChanged: (value) => update(draft.copyWith(brightness: value)),
+                              ),
+                              _LookSlider(
+                                label: 'Ambient',
+                                value: draft.ambient,
+                                min: 0.6,
+                                max: 2.8,
+                                onChanged: (value) => update(draft.copyWith(ambient: value)),
+                              ),
+                              _LookSlider(
+                                label: 'Key light',
+                                value: draft.key,
+                                min: 0.6,
+                                max: 3.6,
+                                onChanged: (value) => update(draft.copyWith(key: value)),
+                              ),
+                              _LookSlider(
+                                label: 'Rim light',
+                                value: draft.rim,
+                                min: 0,
+                                max: 1.8,
+                                onChanged: (value) => update(draft.copyWith(rim: value)),
+                              ),
+                              _LookSlider(
+                                label: 'Specular',
+                                value: draft.specular,
+                                min: 0,
+                                max: 1.4,
+                                onChanged: (value) => update(draft.copyWith(specular: value)),
+                              ),
+                              _LookSlider(
+                                label: 'Shininess',
+                                value: draft.shininess,
+                                min: 4,
+                                max: 80,
+                                formatter: (value) => value.toStringAsFixed(0),
+                                onChanged: (value) => update(draft.copyWith(shininess: value)),
+                              ),
+                              _LookSlider(
+                                label: 'Toon',
+                                value: draft.toon,
+                                min: 0.7,
+                                max: 1.35,
+                                onChanged: (value) => update(draft.copyWith(toon: value)),
+                              ),
+                              _LookSlider(
+                                label: 'Texture',
+                                value: draft.texture,
+                                min: 0.75,
+                                max: 1.35,
+                                onChanged: (value) => update(draft.copyWith(texture: value)),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
   }
 
   Future<void> _showApplySheet() async {
@@ -1187,6 +1525,7 @@ class _QuickActionDock extends StatelessWidget {
     required this.onApplyKind,
     required this.onOpenLibrary,
     required this.onHideUi,
+    required this.onLook,
     required this.onLog,
     required this.onCameraPreset,
   });
@@ -1196,6 +1535,7 @@ class _QuickActionDock extends StatelessWidget {
   final ValueChanged<AssetKind> onApplyKind;
   final VoidCallback onOpenLibrary;
   final VoidCallback onHideUi;
+  final VoidCallback onLook;
   final VoidCallback onLog;
   final ValueChanged<String> onCameraPreset;
 
@@ -1210,6 +1550,12 @@ class _QuickActionDock extends StatelessWidget {
           tooltip: 'Hide UI',
           icon: Icons.visibility_off_rounded,
           onPressed: onHideUi,
+        ),
+        const SizedBox(height: 12),
+        _CircleIconButton(
+          tooltip: 'Look',
+          icon: Icons.auto_awesome_rounded,
+          onPressed: onLook,
         ),
         const SizedBox(height: 12),
         _ExpandableDockRow(
@@ -1798,6 +2144,132 @@ class _SheetHeader extends StatelessWidget {
         ),
         if (action != null) action!,
       ],
+    );
+  }
+}
+
+class _LookSwitch extends StatelessWidget {
+  const _LookSwitch({
+    required this.title,
+    required this.value,
+    required this.onChanged,
+  });
+
+  final String title;
+  final bool value;
+  final ValueChanged<bool> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return SwitchListTile.adaptive(
+      contentPadding: EdgeInsets.zero,
+      dense: true,
+      title: Text(title, style: const TextStyle(fontWeight: FontWeight.w700)),
+      value: value,
+      onChanged: onChanged,
+    );
+  }
+}
+
+class _LookPresetRow extends StatelessWidget {
+  const _LookPresetRow({
+    required this.value,
+    required this.onSelected,
+  });
+
+  final String value;
+  final ValueChanged<String> onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    final minWidth = MediaQuery.sizeOf(context).width - 40;
+    return SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      physics: const BouncingScrollPhysics(),
+      child: ConstrainedBox(
+        constraints: BoxConstraints(minWidth: minWidth),
+        child: SegmentedButton<String>(
+          showSelectedIcon: false,
+          segments: const [
+            ButtonSegment<String>(
+              value: 'balanced',
+              label: Text('Balanced'),
+              icon: Icon(Icons.tonality_rounded),
+            ),
+            ButtonSegment<String>(
+              value: 'clear',
+              label: Text('Clear'),
+              icon: Icon(Icons.wb_sunny_rounded),
+            ),
+            ButtonSegment<String>(
+              value: 'vivid',
+              label: Text('Vivid'),
+              icon: Icon(Icons.palette_rounded),
+            ),
+            ButtonSegment<String>(
+              value: 'stage',
+              label: Text('Stage'),
+              icon: Icon(Icons.flare_rounded),
+            ),
+          ],
+          selected: {value},
+          onSelectionChanged: (selected) => onSelected(selected.first),
+        ),
+      ),
+    );
+  }
+}
+
+class _LookSlider extends StatelessWidget {
+  const _LookSlider({
+    required this.label,
+    required this.value,
+    required this.min,
+    required this.max,
+    required this.onChanged,
+    this.formatter,
+  });
+
+  final String label;
+  final double value;
+  final double min;
+  final double max;
+  final ValueChanged<double> onChanged;
+  final String Function(double value)? formatter;
+
+  @override
+  Widget build(BuildContext context) {
+    final text = formatter?.call(value) ?? value.toStringAsFixed(2);
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  label,
+                  style: const TextStyle(fontWeight: FontWeight.w700),
+                ),
+              ),
+              Text(
+                text,
+                style: const TextStyle(
+                  color: AppColors.textMuted,
+                  fontFeatures: [FontFeature.tabularFigures()],
+                ),
+              ),
+            ],
+          ),
+          Slider(
+            min: min,
+            max: max,
+            value: value.clamp(min, max).toDouble(),
+            onChanged: onChanged,
+          ),
+        ],
+      ),
     );
   }
 }

@@ -55,11 +55,46 @@
     const stage = document.getElementById('stage');
     const statusEl = document.getElementById('status');
     const clock = new THREE.Clock();
+    const defaultLook = Object.freeze({
+      preset: 'balanced',
+      enabled: true,
+      exposure: 1.12,
+      contrast: 1.06,
+      saturation: 1.10,
+      brightness: 1.02,
+      ambient: 1.55,
+      key: 2.35,
+      rim: 0.55,
+      specular: 0.60,
+      shininess: 34,
+      toon: 1.00,
+      texture: 1.00,
+      floor: true
+    });
+    const neutralLook = Object.freeze({
+      ...defaultLook,
+      enabled: false,
+      exposure: 1.0,
+      contrast: 1.0,
+      saturation: 1.0,
+      brightness: 1.0,
+      ambient: 2.0,
+      key: 2.1,
+      rim: 0.0,
+      specular: 1.0,
+      shininess: 30,
+      toon: 1.0,
+      texture: 1.0
+    });
     const state = {
       renderer: null,
       scene: null,
       camera: null,
       controls: null,
+      hemiLight: null,
+      keyLight: null,
+      rimLight: null,
+      floor: null,
       helper: null,
       mesh: null,
       audio: null,
@@ -76,7 +111,8 @@
       physicsReady: false,
       physicsEnabled: false,
       physicsWarningShown: false,
-      recorder: null
+      recorder: null,
+      look: { ...defaultLook }
     };
     let ammoReadyPromise = null;
 
@@ -147,24 +183,221 @@
       state.renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
       state.renderer.setSize(innerWidth, innerHeight);
       state.renderer.outputColorSpace = THREE.SRGBColorSpace;
+      state.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+      state.renderer.toneMappingExposure = defaultLook.exposure;
       stage.appendChild(state.renderer.domElement);
 
       state.controls = new OrbitControls(state.camera, state.renderer.domElement);
       state.controls.enableDamping = true;
       state.controls.target.set(0, 10, 0);
 
-      const hemi = new THREE.HemisphereLight(0xffffff, 0x283044, 2.0);
-      state.scene.add(hemi);
-      const key = new THREE.DirectionalLight(0xffffff, 2.1);
-      key.position.set(20, 32, 18);
-      state.scene.add(key);
-      const floor = new THREE.GridHelper(80, 40, 0x1e3a5f, 0x142033);
-      floor.position.y = 0;
-      state.scene.add(floor);
+      state.hemiLight = new THREE.HemisphereLight(0xffffff, 0x283044, defaultLook.ambient);
+      state.scene.add(state.hemiLight);
+      state.keyLight = new THREE.DirectionalLight(0xffffff, defaultLook.key);
+      state.keyLight.position.set(20, 32, 18);
+      state.scene.add(state.keyLight);
+      state.rimLight = new THREE.DirectionalLight(0xb7d8ff, defaultLook.rim);
+      state.rimLight.position.set(-18, 18, -24);
+      state.scene.add(state.rimLight);
+      state.floor = new THREE.GridHelper(80, 40, 0x1e3a5f, 0x142033);
+      state.floor.position.y = 0;
+      state.scene.add(state.floor);
+      applyLook();
 
       window.addEventListener('resize', resize, false);
       resize();
       requestAnimationFrame(tick);
+    }
+
+    function setLook(payload) {
+      state.look = normalizeLook(payload);
+      applyLook();
+      postStatus();
+    }
+
+    function normalizeLook(payload) {
+      const source = payload && typeof payload === 'object' ? payload : {};
+      return {
+        preset: source.preset ? String(source.preset) : defaultLook.preset,
+        enabled: source.enabled !== false,
+        exposure: clampNumber(source.exposure, defaultLook.exposure, 0.5, 2.0),
+        contrast: clampNumber(source.contrast, defaultLook.contrast, 0.5, 1.8),
+        saturation: clampNumber(source.saturation, defaultLook.saturation, 0.3, 2.0),
+        brightness: clampNumber(source.brightness, defaultLook.brightness, 0.5, 1.6),
+        ambient: clampNumber(source.ambient, defaultLook.ambient, 0.0, 4.0),
+        key: clampNumber(source.key, defaultLook.key, 0.0, 5.0),
+        rim: clampNumber(source.rim, defaultLook.rim, 0.0, 3.0),
+        specular: clampNumber(source.specular, defaultLook.specular, 0.0, 2.0),
+        shininess: clampNumber(source.shininess, defaultLook.shininess, 1.0, 120.0),
+        toon: clampNumber(source.toon, defaultLook.toon, 0.3, 2.0),
+        texture: clampNumber(source.texture, defaultLook.texture, 0.3, 2.0),
+        floor: source.floor !== false
+      };
+    }
+
+    function clampNumber(value, fallback, min, max) {
+      const number = Number(value);
+      return Number.isFinite(number) ? clamp(number, min, max) : fallback;
+    }
+
+    function clamp(value, min, max) {
+      return Math.max(min, Math.min(max, value));
+    }
+
+    function applyLook() {
+      const raw = state.look || defaultLook;
+      const enabled = raw.enabled !== false;
+      const look = enabled ? raw : { ...neutralLook, floor: raw.floor !== false };
+
+      if (state.scene) {
+        state.scene.background = new THREE.Color(0x05070d);
+      }
+      if (state.renderer) {
+        state.renderer.toneMapping = enabled ? THREE.ACESFilmicToneMapping : THREE.NoToneMapping;
+        state.renderer.toneMappingExposure = look.exposure;
+      }
+      if (state.hemiLight) {
+        state.hemiLight.intensity = look.ambient;
+      }
+      if (state.keyLight) {
+        state.keyLight.intensity = look.key;
+      }
+      if (state.rimLight) {
+        state.rimLight.intensity = look.rim;
+      }
+      if (state.floor) {
+        state.floor.visible = look.floor;
+      }
+      if (state.mesh) {
+        state.mesh.traverse((child) => {
+          const materials = Array.isArray(child.material) ? child.material : [child.material];
+          for (const material of materials) {
+            applyMaterialLook(material, look, enabled);
+          }
+        });
+      }
+    }
+
+    function applyMaterialLook(material, look, enabled) {
+      if (!material) return;
+      prepareTextureColorSpace(material);
+      const base = materialLookBase(material);
+      if (!base) return;
+
+      if (base.color && material.color) {
+        material.color.copy(base.color);
+        if (enabled) tuneColor(material.color, look);
+      }
+      if (base.emissive && material.emissive) {
+        material.emissive.copy(base.emissive);
+        if (enabled) material.emissive.multiplyScalar(look.toon);
+      }
+      if (base.specular && material.specular) {
+        material.specular.copy(base.specular);
+        if (enabled) material.specular.multiplyScalar(look.specular);
+      }
+      if (base.shininess !== null && 'shininess' in material) {
+        material.shininess = enabled ? look.shininess : base.shininess;
+      }
+
+      restoreUniformColor(material, base, 'diffuse');
+      restoreUniformColor(material, base, 'emissive');
+      restoreUniformColor(material, base, 'specular');
+      restoreUniformNumber(material, base, 'shininess');
+      if (enabled) {
+        tuneUniformColor(material, 'diffuse', look);
+        multiplyUniformColor(material, 'emissive', look.toon);
+        multiplyUniformColor(material, 'specular', look.specular);
+        setUniformNumber(material, 'shininess', look.shininess);
+      }
+      material.needsUpdate = true;
+    }
+
+    function materialLookBase(material) {
+      if (!material.userData) material.userData = {};
+      if (!material.userData.danxeLookBase) {
+        material.userData.danxeLookBase = {
+          color: material.color && material.color.isColor ? material.color.clone() : null,
+          emissive: material.emissive && material.emissive.isColor ? material.emissive.clone() : null,
+          specular: material.specular && material.specular.isColor ? material.specular.clone() : null,
+          shininess: typeof material.shininess === 'number' ? material.shininess : null,
+          uniforms: {
+            diffuse: captureUniform(material, 'diffuse'),
+            emissive: captureUniform(material, 'emissive'),
+            specular: captureUniform(material, 'specular'),
+            shininess: captureUniform(material, 'shininess')
+          }
+        };
+      }
+      return material.userData.danxeLookBase;
+    }
+
+    function captureUniform(material, name) {
+      const uniform = material.uniforms && material.uniforms[name];
+      if (!uniform) return null;
+      const value = uniform.value;
+      if (value && value.isColor) return value.clone();
+      return typeof value === 'number' ? value : null;
+    }
+
+    function restoreUniformColor(material, base, name) {
+      const uniform = material.uniforms && material.uniforms[name];
+      const baseValue = base.uniforms[name];
+      if (!uniform || !baseValue || !baseValue.isColor || !uniform.value || !uniform.value.isColor) return;
+      uniform.value.copy(baseValue);
+    }
+
+    function restoreUniformNumber(material, base, name) {
+      const uniform = material.uniforms && material.uniforms[name];
+      const baseValue = base.uniforms[name];
+      if (!uniform || typeof baseValue !== 'number') return;
+      uniform.value = baseValue;
+    }
+
+    function tuneUniformColor(material, name, look) {
+      const uniform = material.uniforms && material.uniforms[name];
+      if (!uniform || !uniform.value || !uniform.value.isColor) return;
+      tuneColor(uniform.value, look);
+    }
+
+    function multiplyUniformColor(material, name, scale) {
+      const uniform = material.uniforms && material.uniforms[name];
+      if (!uniform || !uniform.value || !uniform.value.isColor) return;
+      uniform.value.multiplyScalar(scale);
+    }
+
+    function setUniformNumber(material, name, value) {
+      const uniform = material.uniforms && material.uniforms[name];
+      if (!uniform || typeof uniform.value !== 'number') return;
+      uniform.value = value;
+    }
+
+    function tuneColor(color, look) {
+      const hsl = {};
+      color.getHSL(hsl);
+      const texturePunch = 0.88 + look.texture * 0.12;
+      hsl.s = clamp(hsl.s * look.saturation * look.texture, 0, 1);
+      hsl.l = clamp(((hsl.l - 0.5) * look.contrast * texturePunch + 0.5) * look.brightness, 0, 1);
+      color.setHSL(hsl.h, hsl.s, hsl.l);
+    }
+
+    function prepareTextureColorSpace(material) {
+      const textureKeys = ['map', 'emissiveMap', 'lightMap'];
+      for (const key of textureKeys) {
+        const texture = material[key];
+        if (!texture || !texture.isTexture) continue;
+        if ('colorSpace' in texture) {
+          if (texture.colorSpace !== THREE.SRGBColorSpace) {
+            texture.colorSpace = THREE.SRGBColorSpace;
+            texture.needsUpdate = true;
+          }
+        } else if ('encoding' in texture && THREE.sRGBEncoding) {
+          if (texture.encoding !== THREE.sRGBEncoding) {
+            texture.encoding = THREE.sRGBEncoding;
+            texture.needsUpdate = true;
+          }
+        }
+      }
     }
 
     function resetScene() {
@@ -261,6 +494,7 @@
         state.mesh.frustumCulled = false;
         sanitizeMmdMetadata(state.mesh);
         state.scene.add(state.mesh);
+        applyLook();
         const helperState = addMeshToHelper(state.mesh, mmd.animation, physicsReady);
         state.physicsEnabled = helperState.physics;
         if (helperState.animation !== false) {
@@ -859,6 +1093,7 @@
       setSpeed,
       setCamera,
       setCameraPreset,
+      setLook,
       exportVideo
     };
     initRenderer();

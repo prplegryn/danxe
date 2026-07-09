@@ -53,6 +53,7 @@ class MainActivity : FlutterActivity() {
                     "viewerSetSpeed" -> viewerCommand("setSpeed", result, JSONObject().put("speed", call.argument<Double>("speed") ?: 1.0))
                     "viewerSetCamera" -> viewerSetCamera(call, result)
                     "viewerSetCameraPreset" -> viewerSetCameraPreset(call, result)
+                    "viewerSetLook" -> viewerSetLook(call, result)
                     "viewerExport" -> viewerExport(call, result)
                     else -> result.notImplemented()
                 }
@@ -199,6 +200,11 @@ class MainActivity : FlutterActivity() {
         val payload = JSONObject()
             .put("preset", call.argument<String>("preset") ?: "fullFront")
         viewerCommand("setCameraPreset", result, payload)
+    }
+
+    private fun viewerSetLook(call: MethodCall, result: MethodChannel.Result) {
+        val payload = JSONObject(call.argument<String>("look") ?: "{}")
+        viewerCommand("setLook", result, payload)
     }
 
     private fun viewerExport(call: MethodCall, result: MethodChannel.Result) {

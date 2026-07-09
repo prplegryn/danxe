@@ -163,6 +163,13 @@ class HostBridge {
     );
   }
 
+  Future<void> viewerSetLook(Map<String, Object?> look) {
+    return _channel.invokeMethod<void>(
+      'viewerSetLook',
+      <String, Object?>{'look': jsonEncode(look)},
+    );
+  }
+
   Future<String> viewerExport(ExportSettings settings) async {
     final path = await _channel.invokeMethod<String>(
       'viewerExport',
