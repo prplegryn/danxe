@@ -214,6 +214,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
   bool _exporting = false;
   bool _uiHidden = false;
+  bool _lookOpen = false;
   _LookSettings _look = _LookSettings.balanced;
   _QuickMenu? _openQuickMenu;
   String? _lastSceneSignature;
@@ -366,6 +367,17 @@ class _PlayerScreenState extends State<PlayerScreen> {
                       ),
                     ),
                     Positioned(
+                      left: 16,
+                      bottom: bottom + 66,
+                      child: _LookFloatingControls(
+                        open: _lookOpen,
+                        look: _look,
+                        onToggle: _toggleLookControls,
+                        onChanged: (look) => _setLook(look),
+                        onPreset: (look) => _setLook(look, log: true),
+                      ),
+                    ),
+                    Positioned(
                       right: 20,
                       bottom: bottom,
                       child: _QuickActionDock(
@@ -374,10 +386,6 @@ class _PlayerScreenState extends State<PlayerScreen> {
                         onApplyKind: _openAssetPickerFromDock,
                         onOpenLibrary: _openLibraryFromDock,
                         onHideUi: _hideUi,
-                        onLook: () {
-                          _closeQuickMenu();
-                          _showLookSheet();
-                        },
                         onLog: () {
                           _closeQuickMenu();
                           _showLogSheet();
@@ -429,18 +437,30 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
   void _toggleQuickMenu(_QuickMenu menu) {
     setState(() {
+      _lookOpen = false;
       _openQuickMenu = _openQuickMenu == menu ? null : menu;
     });
   }
 
+  void _toggleLookControls() {
+    setState(() {
+      _openQuickMenu = null;
+      _lookOpen = !_lookOpen;
+    });
+  }
+
   void _closeQuickMenu() {
-    if (_openQuickMenu == null) return;
-    setState(() => _openQuickMenu = null);
+    if (_openQuickMenu == null && !_lookOpen) return;
+    setState(() {
+      _openQuickMenu = null;
+      _lookOpen = false;
+    });
   }
 
   void _hideUi() {
     setState(() {
       _openQuickMenu = null;
+      _lookOpen = false;
       _uiHidden = true;
     });
   }
@@ -473,162 +493,6 @@ class _PlayerScreenState extends State<PlayerScreen> {
     if (log) {
       _logs.info('look', 'Applied ${look.presetLabel} look.');
     }
-  }
-
-  Future<void> _showLookSheet() async {
-    var draft = _look;
-    await showModalBottomSheet<void>(
-      context: context,
-      showDragHandle: true,
-      isScrollControlled: true,
-      backgroundColor: AppColors.surface,
-      builder: (context) {
-        return StatefulBuilder(
-          builder: (context, setSheetState) {
-            void update(_LookSettings next, {bool log = false}) {
-              setSheetState(() => draft = next);
-              _setLook(next, log: log);
-            }
-
-            return FractionallySizedBox(
-              heightFactor: 0.84,
-              child: SafeArea(
-                top: false,
-                child: Padding(
-                  padding: const EdgeInsets.fromLTRB(20, 4, 20, 20),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      _SheetHeader(
-                        title: 'Look',
-                        action: IconButton.filledTonal(
-                          tooltip: 'Reset look',
-                          onPressed: () => update(_LookSettings.balanced, log: true),
-                          icon: const Icon(Icons.restart_alt_rounded),
-                        ),
-                      ),
-                      const SizedBox(height: 10),
-                      _LookSwitch(
-                        title: 'Enable tuning',
-                        value: draft.enabled,
-                        onChanged: (value) => update(draft.copyWith(enabled: value)),
-                      ),
-                      _LookSwitch(
-                        title: 'Floor grid',
-                        value: draft.floor,
-                        onChanged: (value) => update(draft.copyWith(floor: value)),
-                      ),
-                      const SizedBox(height: 12),
-                      _LookPresetRow(
-                        value: draft.preset,
-                        onSelected: (preset) {
-                          update(_LookSettings.forPreset(preset, draft), log: true);
-                        },
-                      ),
-                      const SizedBox(height: 14),
-                      Expanded(
-                        child: SingleChildScrollView(
-                          physics: const BouncingScrollPhysics(),
-                          child: Column(
-                            children: [
-                              _LookSlider(
-                                label: 'Exposure',
-                                value: draft.exposure,
-                                min: 0.70,
-                                max: 1.60,
-                                onChanged: (value) => update(draft.copyWith(exposure: value)),
-                              ),
-                              _LookSlider(
-                                label: 'Contrast',
-                                value: draft.contrast,
-                                min: 0.75,
-                                max: 2.00,
-                                onChanged: (value) => update(draft.copyWith(contrast: value)),
-                              ),
-                              _LookSlider(
-                                label: 'Saturation',
-                                value: draft.saturation,
-                                min: 0.50,
-                                max: 2.50,
-                                onChanged: (value) => update(draft.copyWith(saturation: value)),
-                              ),
-                              _LookSlider(
-                                label: 'Brightness',
-                                value: draft.brightness,
-                                min: 0.70,
-                                max: 1.45,
-                                onChanged: (value) => update(draft.copyWith(brightness: value)),
-                              ),
-                              _LookSlider(
-                                label: 'Dehaze',
-                                value: draft.dehaze,
-                                min: 0,
-                                max: 0.45,
-                                onChanged: (value) => update(draft.copyWith(dehaze: value)),
-                              ),
-                              _LookSlider(
-                                label: 'Ambient',
-                                value: draft.ambient,
-                                min: 0.2,
-                                max: 2.4,
-                                onChanged: (value) => update(draft.copyWith(ambient: value)),
-                              ),
-                              _LookSlider(
-                                label: 'Key light',
-                                value: draft.key,
-                                min: 0.2,
-                                max: 3.2,
-                                onChanged: (value) => update(draft.copyWith(key: value)),
-                              ),
-                              _LookSlider(
-                                label: 'Rim light',
-                                value: draft.rim,
-                                min: 0,
-                                max: 1.8,
-                                onChanged: (value) => update(draft.copyWith(rim: value)),
-                              ),
-                              _LookSlider(
-                                label: 'Specular',
-                                value: draft.specular,
-                                min: 0,
-                                max: 1.4,
-                                onChanged: (value) => update(draft.copyWith(specular: value)),
-                              ),
-                              _LookSlider(
-                                label: 'Shininess',
-                                value: draft.shininess,
-                                min: 4,
-                                max: 80,
-                                formatter: (value) => value.toStringAsFixed(0),
-                                onChanged: (value) => update(draft.copyWith(shininess: value)),
-                              ),
-                              _LookSlider(
-                                label: 'Toon',
-                                value: draft.toon,
-                                min: 0.7,
-                                max: 1.35,
-                                onChanged: (value) => update(draft.copyWith(toon: value)),
-                              ),
-                              _LookSlider(
-                                label: 'Texture',
-                                value: draft.texture,
-                                min: 0.50,
-                                max: 2.00,
-                                onChanged: (value) => update(draft.copyWith(texture: value)),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            );
-          },
-        );
-      },
-    );
   }
 
   Future<void> _showApplySheet() async {
@@ -1534,6 +1398,328 @@ class _MiniTransportCapsule extends StatelessWidget {
   }
 }
 
+class _LookFloatingControls extends StatelessWidget {
+  const _LookFloatingControls({
+    required this.open,
+    required this.look,
+    required this.onToggle,
+    required this.onChanged,
+    required this.onPreset,
+  });
+
+  final bool open;
+  final _LookSettings look;
+  final VoidCallback onToggle;
+  final ValueChanged<_LookSettings> onChanged;
+  final ValueChanged<_LookSettings> onPreset;
+
+  @override
+  Widget build(BuildContext context) {
+    final size = MediaQuery.sizeOf(context);
+    final sliderWidth = (size.width - 32).clamp(236.0, 336.0).toDouble();
+    final maxListHeight = (size.height * 0.48).clamp(220.0, 372.0).toDouble();
+    final presetMaxWidth = (size.width - 82).clamp(180.0, 336.0).toDouble();
+
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        ClipRect(
+          child: AnimatedAlign(
+            alignment: Alignment.bottomLeft,
+            heightFactor: open ? 1 : 0,
+            duration: const Duration(milliseconds: 190),
+            curve: Curves.easeOutCubic,
+            child: ConstrainedBox(
+              constraints: BoxConstraints(
+                maxWidth: sliderWidth,
+                maxHeight: maxListHeight,
+              ),
+              child: SingleChildScrollView(
+                reverse: true,
+                physics: const BouncingScrollPhysics(),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    _control(
+                      icon: Icons.filter_b_and_w_rounded,
+                      label: 'Haze',
+                      value: look.dehaze,
+                      min: 0,
+                      max: 0.45,
+                      onChanged: (value) => onChanged(look.copyWith(dehaze: value)),
+                    ),
+                    _control(
+                      icon: Icons.palette_rounded,
+                      label: 'Sat',
+                      value: look.saturation,
+                      min: 0.50,
+                      max: 2.50,
+                      onChanged: (value) => onChanged(look.copyWith(saturation: value)),
+                    ),
+                    _control(
+                      icon: Icons.contrast_rounded,
+                      label: 'Ctr',
+                      value: look.contrast,
+                      min: 0.75,
+                      max: 2.00,
+                      onChanged: (value) => onChanged(look.copyWith(contrast: value)),
+                    ),
+                    _control(
+                      icon: Icons.texture_rounded,
+                      label: 'Tex',
+                      value: look.texture,
+                      min: 0.50,
+                      max: 2.00,
+                      onChanged: (value) => onChanged(look.copyWith(texture: value)),
+                    ),
+                    _control(
+                      icon: Icons.exposure_rounded,
+                      label: 'Exp',
+                      value: look.exposure,
+                      min: 0.70,
+                      max: 1.60,
+                      onChanged: (value) => onChanged(look.copyWith(exposure: value)),
+                    ),
+                    _control(
+                      icon: Icons.light_mode_rounded,
+                      label: 'Amb',
+                      value: look.ambient,
+                      min: 0.2,
+                      max: 2.4,
+                      onChanged: (value) => onChanged(look.copyWith(ambient: value)),
+                    ),
+                    _control(
+                      icon: Icons.flashlight_on_rounded,
+                      label: 'Key',
+                      value: look.key,
+                      min: 0.2,
+                      max: 3.2,
+                      onChanged: (value) => onChanged(look.copyWith(key: value)),
+                    ),
+                    _control(
+                      icon: Icons.flare_rounded,
+                      label: 'Rim',
+                      value: look.rim,
+                      min: 0,
+                      max: 1.8,
+                      onChanged: (value) => onChanged(look.copyWith(rim: value)),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+        AnimatedSize(
+          duration: const Duration(milliseconds: 180),
+          curve: Curves.easeOutCubic,
+          child: SizedBox(height: open ? 10 : 0),
+        ),
+        Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            _CircleIconButton(
+              tooltip: 'Look',
+              icon: Icons.auto_awesome_rounded,
+              selected: open,
+              onPressed: onToggle,
+            ),
+            ClipRect(
+              child: AnimatedAlign(
+                alignment: Alignment.centerLeft,
+                widthFactor: open ? 1 : 0,
+                duration: const Duration(milliseconds: 190),
+                curve: Curves.easeOutCubic,
+                child: Padding(
+                  padding: const EdgeInsets.only(left: 10),
+                  child: ConstrainedBox(
+                    constraints: BoxConstraints(maxWidth: presetMaxWidth),
+                    child: SingleChildScrollView(
+                      scrollDirection: Axis.horizontal,
+                      physics: const BouncingScrollPhysics(),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          _LookPresetButton(
+                            tooltip: 'Balanced',
+                            icon: Icons.tonality_rounded,
+                            selected: look.preset == 'balanced',
+                            onPressed: () => onPreset(_LookSettings.forPreset('balanced', look)),
+                          ),
+                          const SizedBox(width: 8),
+                          _LookPresetButton(
+                            tooltip: 'Clear',
+                            icon: Icons.wb_sunny_rounded,
+                            selected: look.preset == 'clear',
+                            onPressed: () => onPreset(_LookSettings.forPreset('clear', look)),
+                          ),
+                          const SizedBox(width: 8),
+                          _LookPresetButton(
+                            tooltip: 'Vivid',
+                            icon: Icons.palette_rounded,
+                            selected: look.preset == 'vivid',
+                            onPressed: () => onPreset(_LookSettings.forPreset('vivid', look)),
+                          ),
+                          const SizedBox(width: 8),
+                          _LookPresetButton(
+                            tooltip: 'Stage',
+                            icon: Icons.flare_rounded,
+                            selected: look.preset == 'stage',
+                            onPressed: () => onPreset(_LookSettings.forPreset('stage', look)),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Widget _control({
+    required IconData icon,
+    required String label,
+    required double value,
+    required double min,
+    required double max,
+    required ValueChanged<double> onChanged,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: _FloatingLookSlider(
+        icon: icon,
+        label: label,
+        value: value,
+        min: min,
+        max: max,
+        onChanged: onChanged,
+      ),
+    );
+  }
+}
+
+class _FloatingLookSlider extends StatelessWidget {
+  const _FloatingLookSlider({
+    required this.icon,
+    required this.label,
+    required this.value,
+    required this.min,
+    required this.max,
+    required this.onChanged,
+  });
+
+  final IconData icon;
+  final String label;
+  final double value;
+  final double min;
+  final double max;
+  final ValueChanged<double> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final clampedValue = value.clamp(min, max).toDouble();
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: AppColors.surfaceHigh.withOpacity(0.72),
+        border: Border.all(color: AppColors.line),
+        borderRadius: BorderRadius.circular(999),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.20),
+            blurRadius: 16,
+            offset: const Offset(0, 8),
+          ),
+        ],
+      ),
+      child: SizedBox(
+        height: 42,
+        child: Row(
+          children: [
+            const SizedBox(width: 10),
+            Icon(icon, size: 18, color: AppColors.text),
+            const SizedBox(width: 8),
+            SizedBox(
+              width: 36,
+              child: Text(
+                label,
+                maxLines: 1,
+                overflow: TextOverflow.fade,
+                softWrap: false,
+                style: const TextStyle(
+                  color: AppColors.text,
+                  fontSize: 11,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+            ),
+            Expanded(
+              child: Slider(
+                min: min,
+                max: max,
+                value: clampedValue,
+                onChanged: onChanged,
+              ),
+            ),
+            SizedBox(
+              width: 36,
+              child: Text(
+                clampedValue.toStringAsFixed(clampedValue >= 10 ? 0 : 2),
+                textAlign: TextAlign.right,
+                style: const TextStyle(
+                  color: AppColors.textMuted,
+                  fontSize: 10,
+                  fontFeatures: [FontFeature.tabularFigures()],
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ),
+            const SizedBox(width: 10),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _LookPresetButton extends StatelessWidget {
+  const _LookPresetButton({
+    required this.tooltip,
+    required this.icon,
+    required this.selected,
+    required this.onPressed,
+  });
+
+  final String tooltip;
+  final IconData icon;
+  final bool selected;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox.square(
+      dimension: 44,
+      child: IconButton(
+        tooltip: tooltip,
+        onPressed: onPressed,
+        style: IconButton.styleFrom(
+          shape: const CircleBorder(),
+          backgroundColor: selected
+              ? AppColors.primary
+              : AppColors.surfaceHigh.withOpacity(0.72),
+          foregroundColor: AppColors.text,
+          side: const BorderSide(color: AppColors.line),
+        ),
+        icon: Icon(icon, size: 20),
+      ),
+    );
+  }
+}
+
 class _QuickActionDock extends StatelessWidget {
   const _QuickActionDock({
     required this.openMenu,
@@ -1541,7 +1727,6 @@ class _QuickActionDock extends StatelessWidget {
     required this.onApplyKind,
     required this.onOpenLibrary,
     required this.onHideUi,
-    required this.onLook,
     required this.onLog,
     required this.onCameraPreset,
   });
@@ -1551,7 +1736,6 @@ class _QuickActionDock extends StatelessWidget {
   final ValueChanged<AssetKind> onApplyKind;
   final VoidCallback onOpenLibrary;
   final VoidCallback onHideUi;
-  final VoidCallback onLook;
   final VoidCallback onLog;
   final ValueChanged<String> onCameraPreset;
 
@@ -1566,12 +1750,6 @@ class _QuickActionDock extends StatelessWidget {
           tooltip: 'Hide UI',
           icon: Icons.visibility_off_rounded,
           onPressed: onHideUi,
-        ),
-        const SizedBox(height: 12),
-        _CircleIconButton(
-          tooltip: 'Look',
-          icon: Icons.auto_awesome_rounded,
-          onPressed: onLook,
         ),
         const SizedBox(height: 12),
         _ExpandableDockRow(
@@ -2160,132 +2338,6 @@ class _SheetHeader extends StatelessWidget {
         ),
         if (action != null) action!,
       ],
-    );
-  }
-}
-
-class _LookSwitch extends StatelessWidget {
-  const _LookSwitch({
-    required this.title,
-    required this.value,
-    required this.onChanged,
-  });
-
-  final String title;
-  final bool value;
-  final ValueChanged<bool> onChanged;
-
-  @override
-  Widget build(BuildContext context) {
-    return SwitchListTile.adaptive(
-      contentPadding: EdgeInsets.zero,
-      dense: true,
-      title: Text(title, style: const TextStyle(fontWeight: FontWeight.w700)),
-      value: value,
-      onChanged: onChanged,
-    );
-  }
-}
-
-class _LookPresetRow extends StatelessWidget {
-  const _LookPresetRow({
-    required this.value,
-    required this.onSelected,
-  });
-
-  final String value;
-  final ValueChanged<String> onSelected;
-
-  @override
-  Widget build(BuildContext context) {
-    final minWidth = MediaQuery.sizeOf(context).width - 40;
-    return SingleChildScrollView(
-      scrollDirection: Axis.horizontal,
-      physics: const BouncingScrollPhysics(),
-      child: ConstrainedBox(
-        constraints: BoxConstraints(minWidth: minWidth),
-        child: SegmentedButton<String>(
-          showSelectedIcon: false,
-          segments: const [
-            ButtonSegment<String>(
-              value: 'balanced',
-              label: Text('Balanced'),
-              icon: Icon(Icons.tonality_rounded),
-            ),
-            ButtonSegment<String>(
-              value: 'clear',
-              label: Text('Clear'),
-              icon: Icon(Icons.wb_sunny_rounded),
-            ),
-            ButtonSegment<String>(
-              value: 'vivid',
-              label: Text('Vivid'),
-              icon: Icon(Icons.palette_rounded),
-            ),
-            ButtonSegment<String>(
-              value: 'stage',
-              label: Text('Stage'),
-              icon: Icon(Icons.flare_rounded),
-            ),
-          ],
-          selected: {value},
-          onSelectionChanged: (selected) => onSelected(selected.first),
-        ),
-      ),
-    );
-  }
-}
-
-class _LookSlider extends StatelessWidget {
-  const _LookSlider({
-    required this.label,
-    required this.value,
-    required this.min,
-    required this.max,
-    required this.onChanged,
-    this.formatter,
-  });
-
-  final String label;
-  final double value;
-  final double min;
-  final double max;
-  final ValueChanged<double> onChanged;
-  final String Function(double value)? formatter;
-
-  @override
-  Widget build(BuildContext context) {
-    final text = formatter?.call(value) ?? value.toStringAsFixed(2);
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 12),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Expanded(
-                child: Text(
-                  label,
-                  style: const TextStyle(fontWeight: FontWeight.w700),
-                ),
-              ),
-              Text(
-                text,
-                style: const TextStyle(
-                  color: AppColors.textMuted,
-                  fontFeatures: [FontFeature.tabularFigures()],
-                ),
-              ),
-            ],
-          ),
-          Slider(
-            min: min,
-            max: max,
-            value: value.clamp(min, max).toDouble(),
-            onChanged: onChanged,
-          ),
-        ],
-      ),
     );
   }
 }

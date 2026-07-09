@@ -18,7 +18,7 @@
       height: 100%;
       margin: 0;
       overflow: hidden;
-      background: #05070d;
+      background: #ffffff;
       color: #e5e7eb;
       font-family: system-ui, sans-serif;
     }
@@ -55,6 +55,7 @@
     const stage = document.getElementById('stage');
     const statusEl = document.getElementById('status');
     const clock = new THREE.Clock();
+    const environmentColor = 0xffffff;
     const defaultLook = Object.freeze({
       preset: 'balanced',
       enabled: true,
@@ -174,7 +175,7 @@
     function initRenderer() {
       if (state.renderer) return;
       state.scene = new THREE.Scene();
-      state.scene.background = new THREE.Color(0x05070d);
+      state.scene.background = new THREE.Color(environmentColor);
       state.camera = new THREE.PerspectiveCamera(35, innerWidth / innerHeight, 0.1, 2000);
       state.camera.position.set(0, 10, 35);
       state.listener = new THREE.AudioListener();
@@ -193,7 +194,7 @@
       state.controls.enableDamping = true;
       state.controls.target.set(0, 10, 0);
 
-      state.hemiLight = new THREE.HemisphereLight(0xffffff, 0x283044, defaultLook.ambient);
+      state.hemiLight = new THREE.HemisphereLight(environmentColor, environmentColor, defaultLook.ambient);
       state.scene.add(state.hemiLight);
       state.keyLight = new THREE.DirectionalLight(0xffffff, defaultLook.key);
       state.keyLight.position.set(20, 32, 18);
@@ -253,7 +254,7 @@
       const look = enabled ? raw : { ...neutralLook, floor: raw.floor !== false };
 
       if (state.scene) {
-        state.scene.background = new THREE.Color(0x05070d);
+        state.scene.background = new THREE.Color(environmentColor);
       }
       if (state.renderer) {
         state.renderer.toneMapping = enabled ? THREE.LinearToneMapping : THREE.NoToneMapping;
@@ -724,6 +725,7 @@ vec3 danxeApplyLook(vec3 color) {
           state.helper.enable('grant', plan.grant);
           state.helper.enable('ik', plan.ik);
           state.helper.update(0);
+          postPhysicsStatus(mesh, physicsReady, plan, firstError);
           postHelperMode(plan, firstError);
           return { ...plan, animation: true };
         } catch (error) {
@@ -738,6 +740,12 @@ vec3 danxeApplyLook(vec3 color) {
         pmxAnimation: false
       });
       state.helper.add(mesh, { physics: false });
+      postPhysicsStatus(
+        mesh,
+        physicsReady,
+        { physics: false, grant: false, ik: false, pmxAnimation: false, label: 'basic skeletal animation' },
+        firstError
+      );
       post({
         type: 'message',
         message: `Motion skipped for this model: ${errorMessage(firstError)}`,
@@ -759,6 +767,61 @@ vec3 danxeApplyLook(vec3 color) {
         message: `MMD helper mode: ${plan.label}${suffix}.`,
         hidden: true
       });
+    }
+
+    function postPhysicsStatus(mesh, physicsReady, plan, firstError) {
+      const stats = mmdPhysicsStats(mesh);
+      const reason = physicsInactiveReason(stats, physicsReady, plan, firstError);
+      const gravity = physicsParams.gravity;
+      const details = [
+        `runtime=${physicsReady ? 'ready' : 'unavailable'}`,
+        `enabled=${plan.physics ? 'yes' : 'no'}`,
+        `rigidBodies=${stats.rigidBodies}`,
+        `joints=${stats.joints}`,
+        `bones=${stats.bones}`,
+        `gravity=(${formatNumber(gravity.x)},${formatNumber(gravity.y)},${formatNumber(gravity.z)})`,
+        `warmup=${physicsParams.warmup}`,
+        `unitStep=${formatNumber(physicsParams.unitStep)}`,
+        `maxStep=${physicsParams.maxStepNum}`,
+        `frameStep=${formatNumber(physicsFrameStep)}`
+      ];
+      post({
+        type: 'message',
+        message: `MMD physics: ${details.join(', ')}${reason ? `; ${reason}` : ''}.`,
+        hidden: true
+      });
+    }
+
+    function mmdPhysicsStats(mesh) {
+      const geometry = mesh && mesh.geometry;
+      const mmd = geometry && geometry.userData ? geometry.userData.MMD : null;
+      const skeletonBones = mesh && mesh.skeleton && Array.isArray(mesh.skeleton.bones)
+        ? mesh.skeleton.bones.length
+        : 0;
+      if (!mmd) {
+        return { rigidBodies: 0, joints: 0, bones: skeletonBones };
+      }
+      return {
+        rigidBodies: Array.isArray(mmd.rigidBodies) ? mmd.rigidBodies.length : 0,
+        joints: Array.isArray(mmd.constraints)
+          ? mmd.constraints.length
+          : Array.isArray(mmd.joints)
+            ? mmd.joints.length
+            : 0,
+        bones: skeletonBones
+      };
+    }
+
+    function physicsInactiveReason(stats, physicsReady, plan, firstError) {
+      if (!physicsReady) return 'gravity inactive because Ammo physics runtime is unavailable';
+      if (stats.rigidBodies <= 0) return 'gravity inactive because this model has no MMD rigid bodies';
+      if (plan.physics) return '';
+      if (firstError) return `gravity inactive after physics fallback: ${errorMessage(firstError)}`;
+      return 'gravity inactive because physics is disabled for this helper mode';
+    }
+
+    function formatNumber(value) {
+      return Number(value).toFixed(3).replace(/\.?0+$/, '');
     }
 
     function ifFalse(value, label) {
