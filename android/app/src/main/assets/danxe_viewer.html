@@ -51,6 +51,7 @@
     import { MMDLoader } from 'three/addons/loaders/MMDLoader.js';
     import { MMDAnimationHelper } from 'three/addons/animation/MMDAnimationHelper.js';
     import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+    import { OutlineEffect } from 'three/addons/effects/OutlineEffect.js';
 
     const stage = document.getElementById('stage');
     const statusEl = document.getElementById('status');
@@ -59,18 +60,18 @@
     const defaultLook = Object.freeze({
       preset: 'balanced',
       enabled: true,
-      exposure: 1.00,
-      contrast: 1.18,
-      saturation: 1.28,
-      brightness: 1.00,
-      dehaze: 0.08,
-      ambient: 1.05,
-      key: 1.55,
-      rim: 0.35,
-      specular: 0.45,
-      shininess: 30,
-      toon: 1.00,
-      texture: 1.22,
+      exposure: 1.03,
+      contrast: 1.26,
+      saturation: 1.36,
+      brightness: 1.03,
+      dehaze: 0.11,
+      ambient: 1.16,
+      key: 1.72,
+      rim: 0.52,
+      specular: 0.56,
+      shininess: 34,
+      toon: 1.16,
+      texture: 1.30,
       floor: true
     });
     const neutralLook = Object.freeze({
@@ -91,14 +92,17 @@
     });
     const state = {
       renderer: null,
+      effect: null,
       scene: null,
       camera: null,
       controls: null,
       hemiLight: null,
       keyLight: null,
+      keyLightTarget: null,
       rimLight: null,
       grid: null,
       floorPlane: null,
+      contactShadow: null,
       helper: null,
       mesh: null,
       audio: null,
@@ -125,14 +129,27 @@
     };
     let ammoReadyPromise = null;
 
+    const physicsProfile = Object.freeze({
+      name: 'weighted-stable',
+      gravityY: -118,
+      unitStep: 1 / 80,
+      maxStepNum: 4,
+      playbackStep: 1 / 75,
+      exportStep: 1 / 90,
+      loadWarmup: 120,
+      seekWarmup: 72,
+      exportWarmup: 150,
+      loopWarmup: 36
+    });
+
     const physicsParams = {
       physics: true,
-      warmup: 120,
-      unitStep: 1 / 65,
-      maxStepNum: 5,
-      gravity: new THREE.Vector3(0, -98, 0)
+      warmup: physicsProfile.loadWarmup,
+      unitStep: physicsProfile.unitStep,
+      maxStepNum: physicsProfile.maxStepNum,
+      gravity: new THREE.Vector3(0, physicsProfile.gravityY, 0)
     };
-    const physicsFrameStep = 1 / 60;
+    const physicsFrameStep = physicsProfile.playbackStep;
 
     function post(payload) {
       if (window.DanxeAndroid && window.DanxeAndroid.postStatus) {
@@ -194,6 +211,14 @@
       state.renderer.outputColorSpace = THREE.SRGBColorSpace;
       state.renderer.toneMapping = THREE.LinearToneMapping;
       state.renderer.toneMappingExposure = defaultLook.exposure;
+      state.renderer.shadowMap.enabled = true;
+      state.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+      state.effect = new OutlineEffect(state.renderer, {
+        defaultThickness: 0.0032,
+        defaultColor: [0.018, 0.021, 0.028],
+        defaultAlpha: 0.58,
+        defaultKeepAlive: true
+      });
       stage.appendChild(state.renderer.domElement);
 
       state.controls = new OrbitControls(state.camera, state.renderer.domElement);
@@ -202,8 +227,16 @@
 
       state.hemiLight = new THREE.HemisphereLight(environmentColor, environmentColor, defaultLook.ambient);
       state.scene.add(state.hemiLight);
+      state.keyLightTarget = new THREE.Object3D();
+      state.keyLightTarget.position.set(0, 8, 0);
+      state.scene.add(state.keyLightTarget);
       state.keyLight = new THREE.DirectionalLight(0xffffff, defaultLook.key);
       state.keyLight.position.set(20, 32, 18);
+      state.keyLight.target = state.keyLightTarget;
+      state.keyLight.castShadow = true;
+      state.keyLight.shadow.mapSize.set(1536, 1536);
+      state.keyLight.shadow.bias = -0.00018;
+      state.keyLight.shadow.normalBias = 0.018;
       state.scene.add(state.keyLight);
       state.rimLight = new THREE.DirectionalLight(0xb7d8ff, defaultLook.rim);
       state.rimLight.position.set(-18, 18, -24);
@@ -220,9 +253,23 @@
           side: THREE.DoubleSide
         })
       );
+      state.floorPlane.receiveShadow = true;
       state.floorPlane.rotation.x = -Math.PI / 2;
       state.floorPlane.position.y = -0.015;
       state.scene.add(state.floorPlane);
+      state.contactShadow = new THREE.Mesh(
+        new THREE.CircleGeometry(1, 64),
+        new THREE.MeshBasicMaterial({
+          color: 0x0f172a,
+          transparent: true,
+          opacity: 0.16,
+          depthWrite: false
+        })
+      );
+      state.contactShadow.rotation.x = -Math.PI / 2;
+      state.contactShadow.position.y = 0.006;
+      state.contactShadow.renderOrder = 2;
+      state.scene.add(state.contactShadow);
       applyViewOptions();
       applyLook();
 
@@ -371,12 +418,14 @@
         shader.uniforms.danxeSaturation = { value: look.saturation * look.texture };
         shader.uniforms.danxeBrightness = { value: look.brightness };
         shader.uniforms.danxeDehaze = { value: look.dehaze };
+        shader.uniforms.danxeToonStrength = { value: toonStrengthFor(look, true) };
+        shader.uniforms.danxeToonSteps = { value: 5.0 };
         shader.fragmentShader = injectLookShader(shader.fragmentShader);
         material.userData.danxeShaderUniforms = shader.uniforms;
       };
       material.customProgramCacheKey = () => {
         const baseKey = previousKey ? previousKey() : '';
-        return `${baseKey}|danxe-look-v2`;
+        return `${baseKey}|danxe-look-v3`;
       };
       material.userData.danxeShaderPatched = true;
       material.needsUpdate = true;
@@ -389,6 +438,8 @@ uniform float danxeContrast;
 uniform float danxeSaturation;
 uniform float danxeBrightness;
 uniform float danxeDehaze;
+uniform float danxeToonStrength;
+uniform float danxeToonSteps;
 
 vec3 danxeApplyLook(vec3 color) {
   if (danxeLookEnabled < 0.5) return color;
@@ -399,6 +450,10 @@ vec3 danxeApplyLook(vec3 color) {
   float chroma = max(max(color.r, color.g), color.b) - min(min(color.r, color.g), color.b);
   float vibrance = max(danxeSaturation - 1.0, 0.0) * (1.0 - clamp(chroma, 0.0, 1.0));
   color = mix(vec3(luma), color, danxeSaturation + vibrance);
+  vec3 stepped = floor(clamp(color, 0.0, 1.8) * danxeToonSteps + 0.5) / danxeToonSteps;
+  color = mix(color, stepped, danxeToonStrength);
+  float highlight = smoothstep(0.64, 1.0, luma);
+  color += vec3(highlight * danxeToonStrength * 0.08);
   return max(color, vec3(0.0));
 }
 `;
@@ -437,6 +492,13 @@ vec3 danxeApplyLook(vec3 color) {
       uniforms.danxeSaturation.value = active.saturation * active.texture;
       uniforms.danxeBrightness.value = active.brightness;
       uniforms.danxeDehaze.value = active.dehaze;
+      uniforms.danxeToonStrength.value = toonStrengthFor(active, enabled);
+      uniforms.danxeToonSteps.value = 5.0;
+    }
+
+    function toonStrengthFor(look, enabled) {
+      if (!enabled) return 0.0;
+      return clamp(0.18 + (look.toon - 1.0) * 0.12, 0.0, 0.36);
     }
 
     function materialLookBase(material) {
@@ -548,6 +610,7 @@ vec3 danxeApplyLook(vec3 color) {
       state.physicsEnabled = false;
       state.physicsWarningShown = false;
       if (state.controls) state.controls.enabled = true;
+      if (state.contactShadow) state.contactShadow.visible = false;
       postParts();
     }
 
@@ -595,6 +658,68 @@ vec3 danxeApplyLook(vec3 color) {
           material.dispose();
         }
       });
+    }
+
+    function enhanceModelRender(mesh) {
+      if (!mesh) return;
+      mesh.traverse((child) => {
+        if (!child.isMesh) return;
+        child.castShadow = true;
+        child.receiveShadow = true;
+        const materials = Array.isArray(child.material) ? child.material : [child.material];
+        for (const material of materials) {
+          if (!material) continue;
+          material.shadowSide = THREE.FrontSide;
+          if (!material.userData) material.userData = {};
+          material.userData.outlineParameters = {
+            thickness: 0.0032,
+            color: [0.018, 0.021, 0.028],
+            alpha: 0.58,
+            visible: true,
+            keepAlive: true
+          };
+          if ('roughness' in material) material.roughness = Math.min(material.roughness ?? 0.72, 0.76);
+          if ('metalness' in material) material.metalness = Math.max(material.metalness ?? 0.0, 0.0);
+          material.needsUpdate = true;
+        }
+      });
+      updateGroundingForModel(mesh);
+      configureShadowForModel(mesh);
+    }
+
+    function updateGroundingForModel(mesh) {
+      if (!state.contactShadow || !mesh) return;
+      const box = new THREE.Box3().setFromObject(mesh);
+      if (box.isEmpty()) {
+        state.contactShadow.visible = false;
+        return;
+      }
+      const size = box.getSize(new THREE.Vector3());
+      const center = box.getCenter(new THREE.Vector3());
+      const radius = Math.max(size.x, size.z, size.y * 0.42, 1.0);
+      state.contactShadow.position.set(center.x, Math.max(box.min.y + 0.012, 0.008), center.z);
+      state.contactShadow.scale.set(radius * 0.52, radius * 0.34, 1);
+      state.contactShadow.visible = true;
+    }
+
+    function configureShadowForModel(mesh) {
+      if (!state.keyLight || !state.keyLight.shadow || !mesh) return;
+      const box = new THREE.Box3().setFromObject(mesh);
+      if (box.isEmpty()) return;
+      const size = box.getSize(new THREE.Vector3());
+      const center = box.getCenter(new THREE.Vector3());
+      const radius = Math.max(size.x, size.y, size.z, 8);
+      if (state.keyLightTarget) state.keyLightTarget.position.copy(center);
+      state.keyLight.position.set(center.x + radius * 1.0, center.y + radius * 1.7, center.z + radius * 0.9);
+      const camera = state.keyLight.shadow.camera;
+      const extent = radius * 0.8;
+      camera.left = -extent;
+      camera.right = extent;
+      camera.top = extent;
+      camera.bottom = -extent;
+      camera.near = 0.5;
+      camera.far = Math.max(radius * 4.0, 80);
+      camera.updateProjectionMatrix();
     }
 
     function publishModelParts() {
@@ -685,6 +810,7 @@ vec3 danxeApplyLook(vec3 color) {
         state.mesh.frustumCulled = false;
         sanitizeMmdMetadata(state.mesh);
         state.scene.add(state.mesh);
+        enhanceModelRender(state.mesh);
         publishModelParts();
         applyLook();
         const helperState = addMeshToHelper(state.mesh, mmd.animation, physicsReady);
@@ -716,8 +842,7 @@ vec3 danxeApplyLook(vec3 color) {
         state.loaded = true;
         state.loading = false;
         state.current = 0;
-        setHelperTime(0);
-        stabilizePhysics(30);
+        setHelperTime(0, true, physicsProfile.loadWarmup);
         setStatus('', true);
         postStatus();
       } catch (error) {
@@ -883,11 +1008,13 @@ vec3 danxeApplyLook(vec3 color) {
         `rigidBodies=${stats.rigidBodies}`,
         `joints=${stats.joints}`,
         `bones=${stats.bones}`,
+        `profile=${physicsProfile.name}`,
         `gravity=(${formatNumber(gravity.x)},${formatNumber(gravity.y)},${formatNumber(gravity.z)})`,
         `warmup=${physicsParams.warmup}`,
         `unitStep=${formatNumber(physicsParams.unitStep)}`,
         `maxStep=${physicsParams.maxStepNum}`,
-        `frameStep=${formatNumber(physicsFrameStep)}`
+        `frameStep=${formatNumber(physicsFrameStep)}`,
+        `exportStep=${formatNumber(physicsProfile.exportStep)}`
       ];
       post({
         type: 'message',
@@ -1019,7 +1146,7 @@ vec3 danxeApplyLook(vec3 color) {
       state.controls.update();
     }
 
-    function setHelperTime(second, stabilize = true) {
+    function setHelperTime(second, stabilize = true, cycles = physicsProfile.seekWarmup) {
       state.current = Math.max(0, Math.min(second, Math.max(state.duration, 0)));
       if (!state.helper) return;
       for (const mesh of state.helper.meshes) {
@@ -1031,10 +1158,10 @@ vec3 danxeApplyLook(vec3 color) {
         if (object && object.mixer) object.mixer.setTime(state.current);
       }
       state.helper.update(0);
-      if (stabilize) stabilizePhysics(18);
+      if (stabilize) stabilizePhysics(cycles);
     }
 
-    function stabilizePhysics(cycles = 18) {
+    function stabilizePhysics(cycles = physicsProfile.seekWarmup) {
       if (!state.physicsEnabled || !state.helper) return;
       for (const mesh of state.helper.meshes) {
         const object = state.helper.objects.get(mesh);
@@ -1220,7 +1347,7 @@ vec3 danxeApplyLook(vec3 color) {
       };
       post({ type: 'exportStarted', seconds, fps, width, height, mimeType: format.mimeType, audio: hasAudio === true });
       state.playing = false;
-      setHelperTime(0);
+      setHelperTime(0, true, physicsProfile.exportWarmup);
       renderExportFrame();
       recorder.start(1000);
       await waitForRecorderStart(recorder);
@@ -1310,7 +1437,7 @@ vec3 danxeApplyLook(vec3 color) {
         }
         const delta = Math.min(Math.max((now - lastTime) / 1000, 0), 1 / 8);
         lastTime = now;
-        advanceAnimation(delta);
+        advanceAnimation(delta, physicsProfile.exportStep);
         renderExportFrame();
         await nextFrame();
       }
@@ -1318,9 +1445,7 @@ vec3 danxeApplyLook(vec3 color) {
 
     function renderExportFrame() {
       if (state.controls && !state.cameraMotion) state.controls.update();
-      if (state.renderer && state.scene && state.camera) {
-        state.renderer.render(state.scene, state.camera);
-      }
+      renderScene();
     }
 
     function nextFrame() {
@@ -1372,20 +1497,27 @@ vec3 danxeApplyLook(vec3 color) {
         advanceAnimation(delta * state.speed);
       }
       if (state.controls && !state.cameraMotion) state.controls.update();
-      if (state.renderer && state.scene && state.camera) {
+      renderScene();
+    }
+
+    function renderScene() {
+      if (!state.renderer || !state.scene || !state.camera) return;
+      if (state.effect) {
+        state.effect.render(state.scene, state.camera);
+      } else {
         state.renderer.render(state.scene, state.camera);
       }
     }
 
-    function advanceAnimation(delta) {
+    function advanceAnimation(delta, stepSize = physicsFrameStep) {
       if (!state.helper || delta <= 0) return;
       let remaining = delta;
       while (remaining > 0) {
-        const step = Math.min(remaining, physicsFrameStep);
+        const step = Math.min(remaining, stepSize);
         const next = state.current + step;
         if (next >= state.duration) {
           const wrapped = state.duration > 0 ? next % state.duration : 0;
-          setHelperTime(wrapped);
+          setHelperTime(wrapped, true, physicsProfile.loopWarmup);
           restartAudioAtCurrent();
         } else {
           state.helper.update(step);
