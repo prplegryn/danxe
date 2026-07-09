@@ -796,6 +796,16 @@ class _PlayerScreenState extends State<PlayerScreen> {
   Future<void> _showExportSheet() async {
     final model = _library.selectedModel;
     if (model == null || !model.hasRenderableModel) return;
+    final screenExportSize = _currentScreenExportSize(context);
+    final sizeLabels = <String, String>{
+      '1920x1080': '16:9',
+      '1080x1920': '9:16',
+      '1280x720': '720p',
+    };
+    final screenKey = '${screenExportSize.width}x${screenExportSize.height}';
+    sizeLabels[screenKey] = sizeLabels.containsKey(screenKey)
+        ? '${sizeLabels[screenKey]}/Scr'
+        : 'Screen';
     var settings = ExportSettings(
       durationSeconds: _player.duration > 0
           ? _player.duration.round().clamp(1, 600).toInt()
@@ -822,7 +832,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
                     _SegmentedExportRow(
                       label: 'Size',
                       value: '${settings.width}x${settings.height}',
-                      options: const ['1280x720', '1920x1080', '2160x3840'],
+                      options: sizeLabels.keys.toList(growable: false),
+                      labels: sizeLabels,
                       onSelected: (value) {
                         final parts = value.split('x').map(int.parse).toList();
                         setSheetState(() {
@@ -834,9 +845,21 @@ class _PlayerScreenState extends State<PlayerScreen> {
                     _SegmentedExportRow(
                       label: 'FPS',
                       value: '${settings.fps}',
-                      options: const ['24', '30', '60'],
+                      options: const ['30', '60'],
                       onSelected: (value) {
                         setSheetState(() => settings = settings.copyWith(fps: int.parse(value)));
+                      },
+                    ),
+                    const SizedBox(height: 12),
+                    _SegmentedExportRow(
+                      label: 'Bitrate',
+                      value: '${settings.videoBitrateMbps}',
+                      options: const ['12', '16', '24'],
+                      labels: const {'12': '12M', '16': '16M', '24': '24M'},
+                      onSelected: (value) {
+                        setSheetState(() {
+                          settings = settings.copyWith(videoBitrateMbps: int.parse(value));
+                        });
                       },
                     ),
                     const SizedBox(height: 12),
@@ -903,6 +926,22 @@ class _PlayerScreenState extends State<PlayerScreen> {
         );
       },
     );
+  }
+
+  ({int width, int height}) _currentScreenExportSize(BuildContext context) {
+    final size = MediaQuery.sizeOf(context);
+    final aspect = size.width / (size.height <= 0 ? 1.0 : size.height);
+    if (aspect >= 1) {
+      final height = 1080;
+      return (width: _even(height * aspect), height: height);
+    }
+    final width = 1080;
+    return (width: width, height: _even(width / aspect));
+  }
+
+  int _even(double value) {
+    final rounded = (value / 2).round() * 2;
+    return rounded < 2 ? 2 : rounded;
   }
 
   Future<void> _import(AssetKind kind) async {
@@ -1792,12 +1831,14 @@ class _SegmentedExportRow extends StatelessWidget {
     required this.value,
     required this.options,
     required this.onSelected,
+    this.labels,
   });
 
   final String label;
   final String value;
   final List<String> options;
   final ValueChanged<String> onSelected;
+  final Map<String, String>? labels;
 
   @override
   Widget build(BuildContext context) {
@@ -1808,7 +1849,12 @@ class _SegmentedExportRow extends StatelessWidget {
           child: SegmentedButton<String>(
             segments: options
                 .toSet()
-                .map((option) => ButtonSegment<String>(value: option, label: Text(option)))
+                .map(
+                  (option) => ButtonSegment<String>(
+                    value: option,
+                    label: Text(labels?[option] ?? option),
+                  ),
+                )
                 .toList(),
             selected: {value},
             onSelectionChanged: (selected) => onSelected(selected.first),

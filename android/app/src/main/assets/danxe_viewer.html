@@ -71,6 +71,7 @@
       loaded: false,
       cameraMotion: false,
       manualCamera: { yaw: 18, pitch: -8, distance: 5.4 },
+      modelUrl: null,
       recorder: null
     };
 
@@ -158,8 +159,11 @@
 
     async function loadScene(input) {
       initRenderer();
+      const preserveCamera = state.loaded && state.modelUrl === input.modelUrl;
+      const cameraSnapshot = preserveCamera ? snapshotCamera() : null;
       resetScene();
       if (!input.modelUrl) {
+        state.modelUrl = null;
         setStatus('No PMX model selected.');
         post({ type: 'loaded', loaded: false, duration: 0 });
         return;
@@ -179,7 +183,7 @@
         state.scene.add(state.mesh);
         state.helper.add(state.mesh, { animation: mmd.animation, physics: false });
         state.duration = Math.max(state.duration, animationDuration(mmd.animation));
-        frameModel(state.mesh);
+        state.modelUrl = input.modelUrl;
 
         if (cameraUrls.length > 0) {
           const cameraAnimation = await loadCameraAnimation(loader, cameraUrls);
@@ -189,7 +193,11 @@
           state.duration = Math.max(state.duration, animationDuration(cameraAnimation));
         } else {
           state.controls.enabled = true;
-          applyManualCamera();
+          if (cameraSnapshot) {
+            restoreCamera(cameraSnapshot);
+          } else {
+            frameModel(state.mesh);
+          }
         }
 
         if (input.audioUrl) {
@@ -271,6 +279,26 @@
       const z = Math.cos(yaw) * Math.cos(pitch) * distance;
       state.camera.position.set(target.x + x, y, target.z + z);
       state.camera.lookAt(target);
+      state.controls.update();
+    }
+
+    function snapshotCamera() {
+      if (!state.camera || !state.controls) return null;
+      return {
+        position: state.camera.position.clone(),
+        target: state.controls.target.clone(),
+        manualCamera: { ...state.manualCamera }
+      };
+    }
+
+    function restoreCamera(snapshot) {
+      if (!snapshot || !state.camera || !state.controls) return;
+      state.cameraMotion = false;
+      state.controls.enabled = true;
+      state.controls.target.copy(snapshot.target);
+      state.camera.position.copy(snapshot.position);
+      state.manualCamera = { ...snapshot.manualCamera };
+      state.camera.lookAt(state.controls.target);
       state.controls.update();
     }
 
@@ -376,6 +404,7 @@
     function clear() {
       pause();
       resetScene();
+      state.modelUrl = null;
       setStatus('Select a PMX model.');
       postStatus();
     }
@@ -390,17 +419,33 @@
         exportError('This WebView does not support canvas video recording.');
         return;
       }
-      const fps = Number(settings && settings.fps || 30);
+      const fps = Number(settings && settings.fps || 60);
       const width = Number(settings && settings.width || canvas.width);
       const height = Number(settings && settings.height || canvas.height);
+      const bitrate = Math.max(2, Number(settings && settings.videoBitrateMbps || 16)) * 1000000;
       const seconds = Math.max(1, Math.min(Number(settings && settings.seconds || state.duration || 10), 600));
-      const previousSize = { width: canvas.width, height: canvas.height };
+      const previous = {
+        current: state.current,
+        playing: state.playing,
+        pixelRatio: state.renderer.getPixelRatio()
+      };
+      pause();
+      state.renderer.setPixelRatio(1);
       state.renderer.setSize(width, height, false);
       resizeCamera(width, height);
       const chunks = [];
-      const stream = canvas.captureStream(fps);
+      let stream = canvas.captureStream(fps);
+      let videoTrack = stream.getVideoTracks()[0];
+      if (videoTrack && videoTrack.requestFrame) {
+        stream.getTracks().forEach((track) => track.stop());
+        stream = canvas.captureStream(0);
+        videoTrack = stream.getVideoTracks()[0];
+      }
       const mimeType = pickMimeType();
-      const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+      const recorderOptions = mimeType
+        ? { mimeType, videoBitsPerSecond: bitrate }
+        : { videoBitsPerSecond: bitrate };
+      const recorder = new MediaRecorder(stream, recorderOptions);
       state.recorder = recorder;
       recorder.ondataavailable = (event) => {
         if (event.data && event.data.size > 0) chunks.push(event.data);
@@ -419,19 +464,43 @@
         } catch (error) {
           exportError(error && error.message ? error.message : String(error));
         } finally {
-          state.renderer.setSize(previousSize.width, previousSize.height, false);
+          stream.getTracks().forEach((track) => track.stop());
+          state.renderer.setPixelRatio(previous.pixelRatio);
           resize();
+          setHelperTime(previous.current);
+          if (previous.playing) play();
           state.recorder = null;
         }
       };
       post({ type: 'exportStarted', seconds, fps, width, height });
-      seek({ second: 0 });
-      play();
+      state.playing = false;
       recorder.start(1000);
-      setTimeout(() => {
-        pause();
-        if (recorder.state !== 'inactive') recorder.stop();
-      }, seconds * 1000);
+      await recordFrames({
+        fps,
+        seconds,
+        requestFrame: videoTrack && videoTrack.requestFrame ? () => videoTrack.requestFrame() : null
+      });
+      if (recorder.state !== 'inactive') recorder.stop();
+    }
+
+    async function recordFrames({ fps, seconds, requestFrame }) {
+      const totalFrames = Math.max(1, Math.round(seconds * fps));
+      const frameDuration = 1 / fps;
+      const frameDelay = 1000 / fps;
+      await wait(80);
+      for (let frame = 0; frame < totalFrames; frame++) {
+        if (!state.recorder || state.recorder.state === 'inactive') break;
+        setHelperTime(frame * frameDuration);
+        if (state.renderer && state.scene && state.camera) {
+          state.renderer.render(state.scene, state.camera);
+        }
+        if (requestFrame) requestFrame();
+        await wait(frameDelay);
+      }
+    }
+
+    function wait(milliseconds) {
+      return new Promise((resolve) => setTimeout(resolve, milliseconds));
     }
 
     function exportError(message) {

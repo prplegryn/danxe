@@ -2,10 +2,10 @@ import '../library/asset_models.dart';
 
 class ExportSettings {
   const ExportSettings({
-    this.width = 1280,
-    this.height = 720,
-    this.fps = 30,
-    this.videoBitrateMbps = 8,
+    this.width = 1920,
+    this.height = 1080,
+    this.fps = 60,
+    this.videoBitrateMbps = 16,
     this.durationSeconds = 10,
   });
 
