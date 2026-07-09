@@ -196,13 +196,28 @@
     function buildAnimationHelper(options) {
       const helper = new MMDAnimationHelper({
         sync: true,
-        pmxAnimation: options.pmxAnimation !== false,
+        pmxAnimation: options.pmxAnimation === true,
         resetPhysicsOnLoop: true
       });
+      patchGrantSolver(helper);
       helper.enable('physics', options.physics !== false);
       helper.enable('grant', options.grant !== false);
       helper.enable('ik', options.ik !== false);
       return helper;
+    }
+
+    function patchGrantSolver(helper) {
+      const createGrantSolver = helper.createGrantSolver.bind(helper);
+      helper.createGrantSolver = (mesh) => {
+        const solver = createGrantSolver(mesh);
+        const updateOne = solver.updateOne.bind(solver);
+        solver.updateOne = (grant) => {
+          const bones = solver.mesh && solver.mesh.skeleton ? solver.mesh.skeleton.bones : [];
+          if (!grant || !bones[grant.index] || !bones[grant.parentIndex]) return solver;
+          return updateOne(grant);
+        };
+        return solver;
+      };
     }
 
     function disposeObject(object) {
@@ -363,10 +378,11 @@
 
     function addMeshToHelper(mesh, animation, physicsReady) {
       const plans = [
-        { physics: physicsReady, grant: true, ik: true, pmxAnimation: true, label: 'full MMD animation' },
-        { physics: false, grant: true, ik: true, pmxAnimation: true, label: 'animation without physics' },
-        { physics: false, grant: false, ik: true, pmxAnimation: true, label: 'animation without grant' },
-        { physics: false, grant: false, ik: false, pmxAnimation: true, label: 'animation without grant/IK' },
+        { physics: physicsReady, grant: true, ik: true, pmxAnimation: false, label: 'standard MMD animation with physics' },
+        { physics: physicsReady, grant: true, ik: true, pmxAnimation: true, label: 'PMX ordered animation with physics' },
+        { physics: false, grant: true, ik: true, pmxAnimation: false, label: 'standard MMD animation without physics' },
+        { physics: false, grant: true, ik: true, pmxAnimation: true, label: 'PMX ordered animation without physics' },
+        { physics: false, grant: false, ik: true, pmxAnimation: false, label: 'IK animation without grant' },
         { physics: false, grant: false, ik: false, pmxAnimation: false, label: 'basic skeletal animation' }
       ].filter((plan, index, all) => {
         if (plan.physics && !physicsReady) return false;
@@ -387,7 +403,7 @@
           state.helper.enable('grant', plan.grant);
           state.helper.enable('ik', plan.ik);
           state.helper.update(0);
-          postCompatibilityFallback(plan, firstError);
+          postHelperMode(plan, firstError);
           return { ...plan, animation: true };
         } catch (error) {
           firstError = firstError || error;
@@ -409,21 +425,19 @@
       return { physics: false, grant: false, ik: false, pmxAnimation: false, animation: false };
     }
 
-    function postCompatibilityFallback(plan, firstError) {
-      if (!firstError) return;
-      if (!plan.physics) postPhysicsWarning(errorMessage(firstError));
+    function postHelperMode(plan, firstError) {
+      if (firstError && !plan.physics) postPhysicsWarning(errorMessage(firstError));
       const disabled = [
+        ifFalse(plan.physics, 'physics'),
         ifFalse(plan.grant, 'grant'),
         ifFalse(plan.ik, 'IK'),
-        ifFalse(plan.pmxAnimation, 'PMX animation order')
       ].filter(Boolean);
-      if (disabled.length > 0) {
-        post({
-          type: 'message',
-          message: `MMD compatibility fallback: disabled ${disabled.join(', ')} for this model.`,
-          hidden: true
-        });
-      }
+      const suffix = disabled.length > 0 ? `; disabled ${disabled.join(', ')}` : '';
+      post({
+        type: 'message',
+        message: `MMD helper mode: ${plan.label}${suffix}.`,
+        hidden: true
+      });
     }
 
     function ifFalse(value, label) {
