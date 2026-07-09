@@ -182,8 +182,31 @@ class MmdWebView(
         return try {
             val aliases = JSONObject(manifest.readText()).optJSONObject("pathAliases")
                 ?: return relativePath
-            val direct = aliases.optString(relativePath, "")
-            if (direct.isNotBlank()) direct else relativePath
+            val normalized = relativePath
+                .replace('\\', '/')
+                .split('/')
+                .filter { it.isNotBlank() && it != "." }
+                .joinToString("/")
+            val basename = normalized.substringAfterLast('/')
+            val candidates = listOf(
+                normalized,
+                basename,
+                normalized.lowercase(Locale.US),
+                basename.lowercase(Locale.US),
+            )
+            for (candidate in candidates) {
+                val resolved = aliases.optString(candidate, "")
+                if (resolved.isNotBlank()) return resolved
+            }
+            val keys = aliases.keys()
+            while (keys.hasNext()) {
+                val key = keys.next()
+                if (key.substringAfterLast('/').equals(basename, ignoreCase = true)) {
+                    val resolved = aliases.optString(key, "")
+                    if (resolved.isNotBlank()) return resolved
+                }
+            }
+            relativePath
         } catch (_: Exception) {
             relativePath
         }

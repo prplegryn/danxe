@@ -189,12 +189,18 @@
     }
 
     function createAnimationHelper() {
+      return buildAnimationHelper({});
+    }
+
+    function buildAnimationHelper(options) {
       const helper = new MMDAnimationHelper({
         sync: true,
-        pmxAnimation: true,
+        pmxAnimation: options.pmxAnimation !== false,
         resetPhysicsOnLoop: true
       });
-      helper.enable('physics', true);
+      helper.enable('physics', options.physics !== false);
+      helper.enable('grant', options.grant !== false);
+      helper.enable('ik', options.ik !== false);
       return helper;
     }
 
@@ -238,8 +244,11 @@
         state.mesh = mmd.mesh;
         state.mesh.frustumCulled = false;
         state.scene.add(state.mesh);
-        state.physicsEnabled = addMeshToHelper(state.mesh, mmd.animation, physicsReady);
-        state.duration = Math.max(state.duration, animationDuration(mmd.animation));
+        const helperState = addMeshToHelper(state.mesh, mmd.animation, physicsReady);
+        state.physicsEnabled = helperState.physics;
+        if (helperState.animation !== false) {
+          state.duration = Math.max(state.duration, animationDuration(mmd.animation));
+        }
         state.modelUrl = input.modelUrl;
 
         if (cameraUrls.length > 0) {
@@ -278,22 +287,76 @@
     }
 
     function addMeshToHelper(mesh, animation, physicsReady) {
-      if (!physicsReady) {
-        state.helper.add(mesh, { animation, physics: false });
-        state.helper.enable('physics', false);
-        return false;
+      const plans = [
+        { physics: physicsReady, grant: true, ik: true, pmxAnimation: true, label: 'full MMD animation' },
+        { physics: false, grant: true, ik: true, pmxAnimation: true, label: 'animation without physics' },
+        { physics: false, grant: false, ik: true, pmxAnimation: true, label: 'animation without grant' },
+        { physics: false, grant: false, ik: false, pmxAnimation: true, label: 'animation without grant/IK' },
+        { physics: false, grant: false, ik: false, pmxAnimation: false, label: 'basic skeletal animation' }
+      ].filter((plan, index, all) => {
+        if (plan.physics && !physicsReady) return false;
+        return all.findIndex((item) =>
+          item.physics === plan.physics &&
+          item.grant === plan.grant &&
+          item.ik === plan.ik &&
+          item.pmxAnimation === plan.pmxAnimation
+        ) === index;
+      });
+
+      let firstError = null;
+      for (const plan of plans) {
+        try {
+          state.helper = buildAnimationHelper(plan);
+          state.helper.add(mesh, plan.physics ? { animation, ...physicsParams } : { animation, physics: false });
+          state.helper.enable('physics', plan.physics);
+          state.helper.enable('grant', plan.grant);
+          state.helper.enable('ik', plan.ik);
+          state.helper.update(0);
+          postCompatibilityFallback(plan, firstError);
+          return { ...plan, animation: true };
+        } catch (error) {
+          firstError = firstError || error;
+        }
       }
-      try {
-        state.helper.add(mesh, { animation, ...physicsParams });
-        state.helper.enable('physics', true);
-        return true;
-      } catch (error) {
-        state.helper = createAnimationHelper();
-        state.helper.add(mesh, { animation, physics: false });
-        state.helper.enable('physics', false);
-        postPhysicsWarning(error && error.message ? error.message : String(error));
-        return false;
+
+      state.helper = buildAnimationHelper({
+        physics: false,
+        grant: false,
+        ik: false,
+        pmxAnimation: false
+      });
+      state.helper.add(mesh, { physics: false });
+      post({
+        type: 'message',
+        message: `Motion skipped for this model: ${errorMessage(firstError)}`,
+        hidden: true
+      });
+      return { physics: false, grant: false, ik: false, pmxAnimation: false, animation: false };
+    }
+
+    function postCompatibilityFallback(plan, firstError) {
+      if (!firstError) return;
+      if (!plan.physics) postPhysicsWarning(errorMessage(firstError));
+      const disabled = [
+        ifFalse(plan.grant, 'grant'),
+        ifFalse(plan.ik, 'IK'),
+        ifFalse(plan.pmxAnimation, 'PMX animation order')
+      ].filter(Boolean);
+      if (disabled.length > 0) {
+        post({
+          type: 'message',
+          message: `MMD compatibility fallback: disabled ${disabled.join(', ')} for this model.`,
+          hidden: true
+        });
       }
+    }
+
+    function ifFalse(value, label) {
+      return value === false ? label : null;
+    }
+
+    function errorMessage(error) {
+      return error && error.message ? error.message : String(error);
     }
 
     function loadModelAndMotion(loader, modelUrl, motionUrls) {

@@ -510,6 +510,7 @@ class MainActivity : FlutterActivity() {
             val alias = (safeSegments.take(depth) + originalSegments.drop(depth)).joinToString("/")
             if (alias != safePath) {
                 aliases.put(alias, safePath)
+                aliases.put(alias.lowercase(Locale.US), safePath)
             }
         }
     }
