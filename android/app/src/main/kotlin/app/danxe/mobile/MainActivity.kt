@@ -571,7 +571,7 @@ class MainActivity : FlutterActivity() {
             }
             val extension = safeExtension(filename).lowercase(Locale.US).ifBlank { "bin" }
             val prefixName = if (extension == "pmx") "model" else "asset"
-            val newFile = "$prefixName_${fileCounter++.toString().padStart(5, '0')}.$extension"
+            val newFile = "${prefixName}_${fileCounter++.toString().padStart(5, '0')}.$extension"
             (newDirs + newFile).joinToString("/")
         }
     }
