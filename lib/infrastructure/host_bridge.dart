@@ -59,16 +59,25 @@ class HostBridge {
         .toList(growable: false);
   }
 
-  Future<LibraryAsset?> importAsset(AssetKind kind) async {
+  Future<List<LibraryAsset>> importAssets(AssetKind kind) async {
     final payload = await _channel.invokeMethod<String>(
       'importAsset',
       <String, Object?>{'kind': kind.name},
     );
     if (payload == null || payload.isEmpty) {
-      return null;
+      return const [];
     }
-    final decoded = jsonDecode(payload) as Map<String, dynamic>;
-    return LibraryAsset.fromJson(Map<String, Object?>.from(decoded));
+    final decoded = jsonDecode(payload);
+    if (decoded is List) {
+      return decoded
+          .whereType<Map<dynamic, dynamic>>()
+          .map((item) => LibraryAsset.fromJson(Map<String, Object?>.from(item)))
+          .toList(growable: false);
+    }
+    if (decoded is Map<String, dynamic>) {
+      return [LibraryAsset.fromJson(Map<String, Object?>.from(decoded))];
+    }
+    return const [];
   }
 
   Future<void> deleteAsset(LibraryAsset asset) {

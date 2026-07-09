@@ -14,6 +14,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
+import java.text.Normalizer
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -71,13 +72,16 @@ class MainActivity : FlutterActivity() {
 
         val result = pendingImportResult ?: return
         pendingImportResult = null
-        if (resultCode != Activity.RESULT_OK || data?.data == null) {
+        if (resultCode != Activity.RESULT_OK || data == null) {
             result.success(null)
             return
         }
 
         try {
-            val metadata = importUri(pendingKind, data.data!!)
+            val metadata = JSONArray()
+            selectedUris(data).forEach { uri ->
+                metadata.put(importUri(pendingKind, uri))
+            }
             result.success(metadata.toString())
         } catch (error: Exception) {
             result.error("IMPORT_FAILED", error.message, null)
@@ -95,6 +99,7 @@ class MainActivity : FlutterActivity() {
             addCategory(Intent.CATEGORY_OPENABLE)
             type = mimeTypeForKind(pendingKind)
             putExtra(Intent.EXTRA_MIME_TYPES, mimeAlternatesForKind(pendingKind))
+            putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
         }
         startActivityForResult(intent, importRequestCode)
     }
@@ -128,6 +133,8 @@ class MainActivity : FlutterActivity() {
                 id = id,
                 displayName = nextName,
                 sourceFile = sourceFileFor(assetDir, manifest),
+                sourceDisplayName = manifest.optString("sourceName", ""),
+                pathAliases = manifest.optJSONObject("pathAliases") ?: JSONObject(),
             )
             File(assetDir, "asset.json").writeText(metadata.toString(2))
             result.success(metadata.toString())
@@ -149,6 +156,8 @@ class MainActivity : FlutterActivity() {
                 id = manifest.optString("id", call.argument<String>("id") ?: assetDir.name),
                 displayName = manifest.optString("name", assetDir.name),
                 sourceFile = sourceFileFor(assetDir, manifest),
+                sourceDisplayName = manifest.optString("sourceName", ""),
+                pathAliases = manifest.optJSONObject("pathAliases") ?: JSONObject(),
             )
             File(assetDir, "asset.json").writeText(metadata.toString(2))
             result.success(metadata.toString())
@@ -209,23 +218,47 @@ class MainActivity : FlutterActivity() {
 
     private fun importUri(kind: String, uri: Uri): JSONObject {
         val displayName = queryDisplayName(uri)
-        val safeName = sanitizeFileName(displayName)
         val id = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date()) +
             "_" + UUID.randomUUID().toString().substring(0, 8)
         val assetDir = File(File(libraryRoot(), kind), id)
         val sourceDir = File(assetDir, "source")
         sourceDir.mkdirs()
-        val sourceFile = File(sourceDir, safeName)
+        val sourceFile = File(sourceDir, sourceFileName(kind, displayName))
         contentResolver.openInputStream(uri).use { input ->
             requireNotNull(input) { "Unable to open selected file." }
             FileOutputStream(sourceFile).use { output -> input.copyTo(output) }
         }
+        val aliases = JSONObject()
         if (sourceFile.extension.lowercase(Locale.US) == "zip") {
-            extractZip(sourceFile, assetDir)
+            mergeAliases(aliases, extractZip(sourceFile, assetDir))
         }
-        val metadata = scanAssetDirectory(assetDir, kind, id, displayName, sourceFile)
+        val metadata = scanAssetDirectory(
+            assetDir = assetDir,
+            kind = kind,
+            id = id,
+            displayName = displayName,
+            sourceFile = sourceFile,
+            sourceDisplayName = displayName,
+            pathAliases = aliases,
+        )
         File(assetDir, "asset.json").writeText(metadata.toString(2))
         return metadata
+    }
+
+    private fun selectedUris(data: Intent): List<Uri> {
+        val uris = mutableListOf<Uri>()
+        val clipData = data.clipData
+        if (clipData != null) {
+            for (index in 0 until clipData.itemCount) {
+                clipData.getItemAt(index).uri?.let { uri ->
+                    if (!uris.contains(uri)) uris.add(uri)
+                }
+            }
+        }
+        data.data?.let { uri ->
+            if (!uris.contains(uri)) uris.add(uri)
+        }
+        return uris
     }
 
     private fun scanLibrary(): JSONArray {
@@ -260,6 +293,8 @@ class MainActivity : FlutterActivity() {
         id: String,
         displayName: String,
         sourceFile: File,
+        sourceDisplayName: String = sourceFile.name,
+        pathAliases: JSONObject = JSONObject(),
     ): JSONObject {
         val pmx = JSONArray()
         val motions = JSONArray()
@@ -284,21 +319,34 @@ class MainActivity : FlutterActivity() {
             .put("name", displayName)
             .put("path", assetDir.absolutePath)
             .put("sourcePath", sourceFile.absolutePath)
-            .put("sourceName", sourceFile.name)
+            .put("sourceName", sourceDisplayName.ifBlank { sourceFile.name })
             .put("fileCount", fileCount)
             .put("totalBytes", totalBytes)
             .put("pmxCandidates", pmx)
             .put("motionCandidates", motions)
             .put("textureCandidates", textures)
             .put("audioCandidates", audio)
+            .put("pathAliases", pathAliases)
     }
 
-    private fun extractZip(zipFile: File, targetDir: File) {
+    private fun extractZip(zipFile: File, targetDir: File): JSONObject {
         val canonicalTarget = targetDir.canonicalFile
+        val aliases = JSONObject()
+        val usedPaths = mutableSetOf<String>()
+        targetDir.walkTopDown()
+            .filter { it.isFile }
+            .forEach { file -> usedPaths.add(relativePath(targetDir, file)) }
         ZipInputStream(zipFile.inputStream().buffered()).use { zip ->
             var entry = zip.nextEntry
             while (entry != null) {
-                val outFile = File(targetDir, entry.name).canonicalFile
+                val originalPath = normalizeZipPath(entry.name)
+                if (originalPath.isEmpty()) {
+                    zip.closeEntry()
+                    entry = zip.nextEntry
+                    continue
+                }
+                val safePath = safeRelativePath(originalPath, usedPaths, !entry.isDirectory)
+                val outFile = File(targetDir, safePath).canonicalFile
                 if (!outFile.path.startsWith(canonicalTarget.path + File.separator)) {
                     throw IllegalArgumentException("Blocked unsafe zip entry: ${entry.name}")
                 }
@@ -307,11 +355,15 @@ class MainActivity : FlutterActivity() {
                 } else {
                     outFile.parentFile?.mkdirs()
                     FileOutputStream(outFile).use { output -> zip.copyTo(output) }
+                    if (safePath != originalPath) {
+                        addPathAliases(aliases, originalPath, safePath)
+                    }
                 }
                 zip.closeEntry()
                 entry = zip.nextEntry
             }
         }
+        return aliases
     }
 
     private fun queryDisplayName(uri: Uri): String {
@@ -372,9 +424,94 @@ class MainActivity : FlutterActivity() {
             .replace(File.separatorChar, '/')
     }
 
-    private fun sanitizeFileName(name: String): String {
-        val safe = name.replace(Regex("[^A-Za-z0-9._-]"), "_")
-        return safe.ifBlank { "asset.bin" }
+    private fun sourceFileName(kind: String, displayName: String): String {
+        val extension = safeExtension(displayName).ifBlank { "bin" }
+        val safeKind = asciiToken(kind).ifBlank { "asset" }
+        return "source_$safeKind.$extension"
+    }
+
+    private fun normalizeZipPath(path: String): String {
+        val segments = path
+            .replace('\\', '/')
+            .split('/')
+            .filter { it.isNotBlank() && it != "." }
+        require(segments.none { it == ".." }) { "Blocked unsafe zip entry: $path" }
+        return segments.joinToString("/")
+    }
+
+    private fun safeRelativePath(
+        originalPath: String,
+        usedPaths: MutableSet<String>,
+        isFile: Boolean,
+    ): String {
+        val segments = originalPath.split('/').filter { it.isNotBlank() }
+        val safeSegments = segments.mapIndexed { index, segment ->
+            safePathSegment(segment, isFile && index == segments.lastIndex)
+        }.toMutableList()
+        if (safeSegments.isEmpty()) return ""
+
+        var candidate = safeSegments.joinToString("/")
+        if (!isFile) return candidate
+
+        var suffix = 2
+        while (candidate in usedPaths) {
+            safeSegments[safeSegments.lastIndex] = appendPathSuffix(
+                safePathSegment(segments.last(), true),
+                suffix,
+            )
+            candidate = safeSegments.joinToString("/")
+            suffix += 1
+        }
+        usedPaths.add(candidate)
+        return candidate
+    }
+
+    private fun safePathSegment(segment: String, isFile: Boolean): String {
+        if (!isFile) return asciiToken(segment).ifBlank { "dir" }
+        val base = segment.substringBeforeLast('.', segment)
+        val extension = safeExtension(segment)
+        val safeBase = asciiToken(base).ifBlank { "asset" }
+        return if (extension.isBlank()) safeBase else "$safeBase.$extension"
+    }
+
+    private fun appendPathSuffix(fileName: String, suffix: Int): String {
+        val dot = fileName.lastIndexOf('.')
+        if (dot <= 0) return "${fileName}_$suffix"
+        return "${fileName.substring(0, dot)}_$suffix${fileName.substring(dot)}"
+    }
+
+    private fun safeExtension(name: String): String {
+        val extension = name.substringAfterLast('.', "")
+        return asciiToken(extension).take(12)
+    }
+
+    private fun asciiToken(value: String): String {
+        val normalized = Normalizer.normalize(value, Normalizer.Form.NFKD)
+        return normalized
+            .replace(Regex("\\p{M}+"), "")
+            .lowercase(Locale.US)
+            .replace(Regex("[^a-z0-9._-]+"), "_")
+            .trim('_', '.', '-')
+    }
+
+    private fun mergeAliases(target: JSONObject, source: JSONObject) {
+        val keys = source.keys()
+        while (keys.hasNext()) {
+            val key = keys.next()
+            target.put(key, source.getString(key))
+        }
+    }
+
+    private fun addPathAliases(aliases: JSONObject, originalPath: String, safePath: String) {
+        val originalSegments = originalPath.split('/').filter { it.isNotBlank() }
+        val safeSegments = safePath.split('/').filter { it.isNotBlank() }
+        val limit = minOf(originalSegments.size, safeSegments.size)
+        for (depth in 0 until limit) {
+            val alias = (safeSegments.take(depth) + originalSegments.drop(depth)).joinToString("/")
+            if (alias != safePath) {
+                aliases.put(alias, safePath)
+            }
+        }
     }
 
     private fun mimeTypeForKind(kind: String): String {

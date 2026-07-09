@@ -148,12 +148,15 @@ class MmdWebView(
             return textResponse(404, "Not Found", "Unknown Danxe resource.")
         }
 
-        var target = libraryRoot
-        for (segment in segments.drop(1)) {
+        val assetDir = File(File(libraryRoot, segments[1]), segments[2])
+        val requestedPath = segments.drop(3).joinToString("/")
+        val resolvedPath = resolveAssetPathAlias(assetDir, requestedPath)
+        var target = assetDir
+        for (segment in resolvedPath.split('/').filter { it.isNotEmpty() }) {
             target = File(target, segment)
         }
 
-        val rootPath = libraryRoot.canonicalPath
+        val rootPath = assetDir.canonicalPath
         val targetFile = target.canonicalFile
         if (!targetFile.path.startsWith(rootPath + File.separator)) {
             return textResponse(403, "Forbidden", "Blocked unsafe Danxe resource.")
@@ -170,6 +173,20 @@ class MmdWebView(
             corsHeaders(),
             targetFile.inputStream(),
         )
+    }
+
+    private fun resolveAssetPathAlias(assetDir: File, relativePath: String): String {
+        if (relativePath.isBlank()) return relativePath
+        val manifest = File(assetDir, "asset.json")
+        if (!manifest.isFile) return relativePath
+        return try {
+            val aliases = JSONObject(manifest.readText()).optJSONObject("pathAliases")
+                ?: return relativePath
+            val direct = aliases.optString(relativePath, "")
+            if (direct.isNotBlank()) direct else relativePath
+        } catch (_: Exception) {
+            relativePath
+        }
     }
 
     private fun textResponse(status: Int, reason: String, body: String): WebResourceResponse {

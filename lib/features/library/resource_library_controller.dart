@@ -46,16 +46,19 @@ class ResourceLibraryController extends ChangeNotifier {
     }
   }
 
-  Future<LibraryAsset?> importKind(AssetKind kind) async {
+  Future<List<LibraryAsset>> importKind(AssetKind kind) async {
     _setBusy(true);
     try {
-      final asset = await _bridge.importAsset(kind);
-      if (asset != null) {
-        _assets = [..._assets.where((item) => item.id != asset.id), asset];
-        select(asset);
+      final imported = await _bridge.importAssets(kind);
+      if (imported.isNotEmpty) {
+        final importedIds = imported.map((asset) => asset.id).toSet();
+        _assets = [
+          ..._assets.where((item) => !importedIds.contains(item.id)),
+          ...imported,
+        ];
       }
       _error = null;
-      return asset;
+      return imported;
     } on MissingPluginException {
       _error = 'Android file picker is unavailable in this runtime.';
     } on Object catch (error) {
@@ -63,7 +66,7 @@ class ResourceLibraryController extends ChangeNotifier {
     } finally {
       _setBusy(false);
     }
-    return null;
+    return const [];
   }
 
   Future<void> delete(LibraryAsset asset) async {

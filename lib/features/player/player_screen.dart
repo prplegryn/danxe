@@ -30,6 +30,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
   late final AppLogController _logs;
 
   bool _exporting = false;
+  bool _uiHidden = false;
   _QuickMenu? _openQuickMenu;
   String? _lastSceneSignature;
   String? _lastLibraryError;
@@ -159,35 +160,44 @@ class _PlayerScreenState extends State<PlayerScreen> {
               return Stack(
                 children: [
                   const Positioned.fill(child: NativeMmdViewport()),
-                  Positioned(
-                    left: 16,
-                    bottom: bottom,
-                    child: _MiniTransportCapsule(
-                      player: _player,
-                      exporting: _exporting,
-                      canExport: _library.selectedModel?.hasRenderableModel ?? false,
-                      onToggle: _togglePlayback,
-                      onExport: () {
-                        _closeQuickMenu();
-                        _showExportSheet();
-                      },
+                  if (_uiHidden)
+                    Positioned(
+                      top: safe.top + 10,
+                      right: safe.right + 10,
+                      child: _RestoreUiButton(onPressed: _showUi),
+                    )
+                  else ...[
+                    Positioned(
+                      left: 16,
+                      bottom: bottom,
+                      child: _MiniTransportCapsule(
+                        player: _player,
+                        exporting: _exporting,
+                        canExport: _library.selectedModel?.hasRenderableModel ?? false,
+                        onToggle: _togglePlayback,
+                        onExport: () {
+                          _closeQuickMenu();
+                          _showExportSheet();
+                        },
+                      ),
                     ),
-                  ),
-                  Positioned(
-                    right: 20,
-                    bottom: bottom,
-                    child: _QuickActionDock(
-                      openMenu: _openQuickMenu,
-                      onToggleMenu: _toggleQuickMenu,
-                      onApplyKind: _openAssetPickerFromDock,
-                      onOpenLibrary: _openLibraryFromDock,
-                      onLog: () {
-                        _closeQuickMenu();
-                        _showLogSheet();
-                      },
-                      onCameraPreset: _applyCameraPreset,
+                    Positioned(
+                      right: 20,
+                      bottom: bottom,
+                      child: _QuickActionDock(
+                        openMenu: _openQuickMenu,
+                        onToggleMenu: _toggleQuickMenu,
+                        onApplyKind: _openAssetPickerFromDock,
+                        onOpenLibrary: _openLibraryFromDock,
+                        onHideUi: _hideUi,
+                        onLog: () {
+                          _closeQuickMenu();
+                          _showLogSheet();
+                        },
+                        onCameraPreset: _applyCameraPreset,
+                      ),
                     ),
-                  ),
+                  ],
                 ],
               );
             },
@@ -238,6 +248,17 @@ class _PlayerScreenState extends State<PlayerScreen> {
   void _closeQuickMenu() {
     if (_openQuickMenu == null) return;
     setState(() => _openQuickMenu = null);
+  }
+
+  void _hideUi() {
+    setState(() {
+      _openQuickMenu = null;
+      _uiHidden = true;
+    });
+  }
+
+  void _showUi() {
+    setState(() => _uiHidden = false);
   }
 
   void _openAssetPickerFromDock(AssetKind kind) {
@@ -951,9 +972,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
   }
 
   Future<void> _import(AssetKind kind) async {
-    final asset = await _library.importKind(kind);
-    if (asset != null) {
-      _logs.info('library', 'Imported ${asset.name}.');
+    final imported = await _library.importKind(kind);
+    if (imported.isNotEmpty) {
+      final names = imported.map((asset) => asset.name).join(', ');
+      _logs.info('library', 'Imported ${imported.length} ${kind.name} asset${imported.length == 1 ? '' : 's'}: $names.');
       if (kind == AssetKind.face) {
         _logs.info('apply', 'Face VMD is ready to apply.');
       }
@@ -1164,6 +1186,7 @@ class _QuickActionDock extends StatelessWidget {
     required this.onToggleMenu,
     required this.onApplyKind,
     required this.onOpenLibrary,
+    required this.onHideUi,
     required this.onLog,
     required this.onCameraPreset,
   });
@@ -1172,6 +1195,7 @@ class _QuickActionDock extends StatelessWidget {
   final ValueChanged<_QuickMenu> onToggleMenu;
   final ValueChanged<AssetKind> onApplyKind;
   final VoidCallback onOpenLibrary;
+  final VoidCallback onHideUi;
   final VoidCallback onLog;
   final ValueChanged<String> onCameraPreset;
 
@@ -1182,6 +1206,12 @@ class _QuickActionDock extends StatelessWidget {
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.end,
       children: [
+        _CircleIconButton(
+          tooltip: 'Hide UI',
+          icon: Icons.visibility_off_rounded,
+          onPressed: onHideUi,
+        ),
+        const SizedBox(height: 12),
         _ExpandableDockRow(
           maxActionsWidth: maxActionsWidth,
           open: openMenu == _QuickMenu.camera,
@@ -1254,6 +1284,36 @@ class _QuickActionDock extends StatelessWidget {
           onPressed: onLog,
         ),
       ],
+    );
+  }
+}
+
+class _RestoreUiButton extends StatelessWidget {
+  const _RestoreUiButton({required this.onPressed});
+
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox.square(
+      dimension: 56,
+      child: Center(
+        child: SizedBox.square(
+          dimension: 40,
+          child: IconButton(
+            tooltip: 'Show UI',
+            padding: EdgeInsets.zero,
+            onPressed: onPressed,
+            style: IconButton.styleFrom(
+              shape: const CircleBorder(),
+              backgroundColor: AppColors.surfaceHigh.withOpacity(0.72),
+              foregroundColor: AppColors.text,
+              side: const BorderSide(color: AppColors.line),
+            ),
+            icon: const Icon(Icons.visibility_rounded, size: 19),
+          ),
+        ),
+      ),
     );
   }
 }
