@@ -27,6 +27,45 @@ class ResourceLibraryController extends ChangeNotifier {
   LibraryAsset? get selectedAudio => _selectedAudio;
   LibraryAsset? get selectedFace => _selectedFace;
 
+  List<DanceAssetPackage> get dancePackages {
+    final grouped = <String, List<LibraryAsset>>{};
+    for (final asset in _assets) {
+      if (asset.packageId.isEmpty) continue;
+      if (asset.kind != AssetKind.motion &&
+          asset.kind != AssetKind.audio &&
+          asset.kind != AssetKind.face &&
+          asset.kind != AssetKind.camera) {
+        continue;
+      }
+      grouped.putIfAbsent(asset.packageId, () => <LibraryAsset>[]).add(asset);
+    }
+
+    final packages = grouped.entries.map((entry) {
+      final assets = entry.value;
+      LibraryAsset? firstOf(AssetKind kind) {
+        for (final asset in assets) {
+          if (asset.kind == kind) return asset;
+        }
+        return null;
+      }
+
+      final fallbackName = assets.first.packageName.isNotEmpty
+          ? assets.first.packageName
+          : assets.first.name.split('.').first;
+      return DanceAssetPackage(
+        id: entry.key,
+        name: fallbackName,
+        motion: firstOf(AssetKind.motion),
+        audio: firstOf(AssetKind.audio),
+        face: firstOf(AssetKind.face),
+        camera: firstOf(AssetKind.camera),
+      );
+    }).where((bundle) => bundle.canApply).toList(growable: false)
+      ..sort((a, b) => a.name.compareTo(b.name));
+
+    return packages;
+  }
+
   List<LibraryAsset> byKind(AssetKind kind) {
     return _assets.where((asset) => asset.kind == kind).toList(growable: false);
   }
@@ -143,6 +182,13 @@ class ResourceLibraryController extends ChangeNotifier {
       case AssetKind.other:
         break;
     }
+    notifyListeners();
+  }
+
+  void applyDancePackage(DanceAssetPackage bundle) {
+    _selectedMotion = bundle.motion;
+    _selectedAudio = bundle.audio;
+    _selectedFace = bundle.face;
     notifyListeners();
   }
 

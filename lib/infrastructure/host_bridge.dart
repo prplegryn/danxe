@@ -22,10 +22,38 @@ class ViewerEvent {
   double get current => (values['current'] as num?)?.toDouble() ?? 0;
   double get duration => (values['duration'] as num?)?.toDouble() ?? 0;
   double get speed => (values['speed'] as num?)?.toDouble() ?? 1;
+  List<ViewerPart> get parts {
+    final raw = values['parts'];
+    if (raw is! List) return const [];
+    return raw
+        .whereType<Map<dynamic, dynamic>>()
+        .map((item) => ViewerPart.fromJson(Map<String, Object?>.from(item)))
+        .toList(growable: false);
+  }
 
   factory ViewerEvent.fromPayload(String payload) {
     final decoded = jsonDecode(payload) as Map<String, dynamic>;
     return ViewerEvent(Map<String, Object?>.from(decoded));
+  }
+}
+
+class ViewerPart {
+  const ViewerPart({
+    required this.id,
+    required this.name,
+    required this.visible,
+  });
+
+  final String id;
+  final String name;
+  final bool visible;
+
+  factory ViewerPart.fromJson(Map<String, Object?> json) {
+    return ViewerPart(
+      id: json['id'] as String? ?? '',
+      name: json['name'] as String? ?? 'Part',
+      visible: json['visible'] as bool? ?? true,
+    );
   }
 }
 
@@ -167,6 +195,28 @@ class HostBridge {
     return _channel.invokeMethod<void>(
       'viewerSetLook',
       <String, Object?>{'look': jsonEncode(look)},
+    );
+  }
+
+  Future<void> viewerSetViewOptions({
+    required bool gridVisible,
+    required bool floorVisible,
+  }) {
+    return _channel.invokeMethod<void>(
+      'viewerSetViewOptions',
+      <String, Object?>{
+        'view': jsonEncode(<String, Object?>{
+          'gridVisible': gridVisible,
+          'floorVisible': floorVisible,
+        }),
+      },
+    );
+  }
+
+  Future<void> viewerSetPartVisibility(String id, bool visible) {
+    return _channel.invokeMethod<void>(
+      'viewerSetPartVisibility',
+      <String, Object?>{'id': id, 'visible': visible},
     );
   }
 

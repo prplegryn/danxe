@@ -13,7 +13,7 @@ import '../library/resource_library_controller.dart';
 import '../logs/app_log_controller.dart';
 import 'player_controller.dart';
 
-enum _QuickMenu { camera, apply }
+enum _QuickMenu { view, camera, apply }
 
 class _LookSettings {
   const _LookSettings({
@@ -215,8 +215,11 @@ class _PlayerScreenState extends State<PlayerScreen> {
   bool _exporting = false;
   bool _uiHidden = false;
   bool _lookOpen = false;
+  bool _gridVisible = true;
+  bool _floorVisible = false;
   _LookSettings _look = _LookSettings.balanced;
   _QuickMenu? _openQuickMenu;
+  List<ViewerPart> _modelParts = const [];
   String? _lastSceneSignature;
   String? _lastLibraryError;
 
@@ -247,10 +250,22 @@ class _PlayerScreenState extends State<PlayerScreen> {
       if (event.type == 'exportComplete' || event.type == 'exportError') {
         _exporting = false;
       }
+      if (event.type == 'parts') {
+        _modelParts = event.parts;
+      }
+      if (event.values.containsKey('gridVisible')) {
+        _gridVisible = event.values['gridVisible'] as bool? ?? _gridVisible;
+      }
+      if (event.values.containsKey('floorVisible')) {
+        _floorVisible = event.values['floorVisible'] as bool? ?? _floorVisible;
+      }
       _player.applyViewerEvent(event);
     });
 
     switch (event.type) {
+      case 'parts':
+        _logs.info('renderer', 'Model parts listed: ${event.parts.length}.');
+        break;
       case 'loaded':
         _logs.info('renderer', 'Scene loaded.');
         break;
@@ -296,6 +311,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
     ].join(':');
     if (signature == _lastSceneSignature) return;
     _lastSceneSignature = signature;
+    if (mounted) {
+      setState(() => _modelParts = const []);
+    }
 
     final model = _library.selectedModel;
     if (model == null) {
@@ -385,12 +403,19 @@ class _PlayerScreenState extends State<PlayerScreen> {
                         onToggleMenu: _toggleQuickMenu,
                         onApplyKind: _openAssetPickerFromDock,
                         onOpenLibrary: _openLibraryFromDock,
+                        onOpenDancePackages: _openDancePackagesFromDock,
                         onHideUi: _hideUi,
+                        onToggleGrid: _toggleGrid,
+                        onToggleFloor: _toggleFloor,
+                        onTogglePart: _togglePartVisibility,
                         onLog: () {
                           _closeQuickMenu();
                           _showLogSheet();
                         },
                         onCameraPreset: _applyCameraPreset,
+                        gridVisible: _gridVisible,
+                        floorVisible: _floorVisible,
+                        modelParts: _modelParts,
                       ),
                     ),
                   ],
@@ -477,6 +502,62 @@ class _PlayerScreenState extends State<PlayerScreen> {
   void _openLibraryFromDock() {
     _closeQuickMenu();
     _showLibraryManager();
+  }
+
+  void _openDancePackagesFromDock() {
+    _closeQuickMenu();
+    _showDancePackagePicker();
+  }
+
+  Future<void> _toggleGrid() async {
+    final nextGrid = !_gridVisible;
+    await _setViewOptions(gridVisible: nextGrid, floorVisible: false);
+  }
+
+  Future<void> _toggleFloor() async {
+    final nextFloor = !_floorVisible;
+    await _setViewOptions(
+      gridVisible: nextFloor ? false : _gridVisible,
+      floorVisible: nextFloor,
+    );
+  }
+
+  Future<void> _setViewOptions({
+    required bool gridVisible,
+    required bool floorVisible,
+  }) async {
+    final normalizedGrid = floorVisible ? false : gridVisible;
+    setState(() {
+      _gridVisible = normalizedGrid;
+      _floorVisible = floorVisible;
+    });
+    try {
+      await _bridge.viewerSetViewOptions(
+        gridVisible: normalizedGrid,
+        floorVisible: floorVisible,
+      );
+      _logs.info(
+        'view',
+        'Grid=${normalizedGrid ? 'on' : 'off'}, floor=${floorVisible ? 'on' : 'off'}.',
+      );
+    } on Object catch (error) {
+      _logs.error('view', error.toString());
+    }
+  }
+
+  void _togglePartVisibility(ViewerPart part) {
+    final nextVisible = !part.visible;
+    setState(() {
+      _modelParts = _modelParts
+          .map((item) => item.id == part.id
+              ? ViewerPart(id: item.id, name: item.name, visible: nextVisible)
+              : item)
+          .toList(growable: false);
+    });
+    _bridge.viewerSetPartVisibility(part.id, nextVisible).catchError((Object error) {
+      _logs.error('view', error.toString());
+    });
+    _logs.info('view', '${nextVisible ? 'Showed' : 'Hid'} ${part.name}.');
   }
 
   Future<void> _applyCameraPreset(String preset) async {
@@ -648,6 +729,66 @@ class _PlayerScreenState extends State<PlayerScreen> {
                                       Navigator.of(context).pop();
                                     },
                                     onEdit: () => _showAssetEditor(asset),
+                                  );
+                                },
+                              ),
+                      ),
+                    ],
+                  ),
+                );
+              },
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Future<void> _showDancePackagePicker() async {
+    await showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      isScrollControlled: true,
+      backgroundColor: AppColors.surface,
+      builder: (context) {
+        return FractionallySizedBox(
+          heightFactor: 0.66,
+          child: SafeArea(
+            top: false,
+            child: AnimatedBuilder(
+              animation: _library,
+              builder: (context, _) {
+                final packages = _library.dancePackages;
+                return Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 4, 20, 20),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const _SheetHeader(title: 'Dance packages'),
+                      const SizedBox(height: 12),
+                      Expanded(
+                        child: packages.isEmpty
+                            ? Center(
+                                child: Text(
+                                  'Import a motion/audio zip first.',
+                                  style: TextStyle(color: AppColors.textMuted.withOpacity(0.86)),
+                                ),
+                              )
+                            : ListView.separated(
+                                itemCount: packages.length,
+                                separatorBuilder: (context, index) => const SizedBox(height: 10),
+                                itemBuilder: (context, index) {
+                                  final bundle = packages[index];
+                                  return _DancePackageRow(
+                                    bundle: bundle,
+                                    onTap: () {
+                                      _library.applyDancePackage(bundle);
+                                      _logs.info(
+                                        'apply',
+                                        'Applied dance package ${bundle.name} without camera.',
+                                      );
+                                      Navigator.of(context).pop();
+                                    },
                                   );
                                 },
                               ),
@@ -1193,7 +1334,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
     final imported = await _library.importKind(kind);
     if (imported.isNotEmpty) {
       final names = imported.map((asset) => asset.name).join(', ');
-      _logs.info('library', 'Imported ${imported.length} ${kind.name} asset${imported.length == 1 ? '' : 's'}: $names.');
+      _logs.info('library', 'Imported ${imported.length} resource${imported.length == 1 ? '' : 's'}: $names.');
       if (kind == AssetKind.face) {
         _logs.info('apply', 'Face VMD is ready to apply.');
       }
@@ -1726,18 +1867,32 @@ class _QuickActionDock extends StatelessWidget {
     required this.onToggleMenu,
     required this.onApplyKind,
     required this.onOpenLibrary,
+    required this.onOpenDancePackages,
     required this.onHideUi,
+    required this.onToggleGrid,
+    required this.onToggleFloor,
+    required this.onTogglePart,
     required this.onLog,
     required this.onCameraPreset,
+    required this.gridVisible,
+    required this.floorVisible,
+    required this.modelParts,
   });
 
   final _QuickMenu? openMenu;
   final ValueChanged<_QuickMenu> onToggleMenu;
   final ValueChanged<AssetKind> onApplyKind;
   final VoidCallback onOpenLibrary;
+  final VoidCallback onOpenDancePackages;
   final VoidCallback onHideUi;
+  final VoidCallback onToggleGrid;
+  final VoidCallback onToggleFloor;
+  final ValueChanged<ViewerPart> onTogglePart;
   final VoidCallback onLog;
   final ValueChanged<String> onCameraPreset;
+  final bool gridVisible;
+  final bool floorVisible;
+  final List<ViewerPart> modelParts;
 
   @override
   Widget build(BuildContext context) {
@@ -1746,10 +1901,17 @@ class _QuickActionDock extends StatelessWidget {
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.end,
       children: [
-        _CircleIconButton(
-          tooltip: 'Hide UI',
-          icon: Icons.visibility_off_rounded,
-          onPressed: onHideUi,
+        _ViewActionDock(
+          open: openMenu == _QuickMenu.view,
+          maxActionsWidth: maxActionsWidth,
+          modelParts: modelParts,
+          gridVisible: gridVisible,
+          floorVisible: floorVisible,
+          onToggleMenu: () => onToggleMenu(_QuickMenu.view),
+          onHideUi: onHideUi,
+          onToggleGrid: onToggleGrid,
+          onToggleFloor: onToggleFloor,
+          onTogglePart: onTogglePart,
         ),
         const SizedBox(height: 12),
         _ExpandableDockRow(
@@ -1809,6 +1971,11 @@ class _QuickActionDock extends StatelessWidget {
               icon: Icons.inventory_2_rounded,
               onPressed: onOpenLibrary,
             ),
+            _CircleIconButton(
+              tooltip: 'Dance packages',
+              icon: Icons.playlist_play_rounded,
+              onPressed: onOpenDancePackages,
+            ),
           ],
           anchor: _CircleIconButton(
             tooltip: 'Apply',
@@ -1824,6 +1991,168 @@ class _QuickActionDock extends StatelessWidget {
           onPressed: onLog,
         ),
       ],
+    );
+  }
+}
+
+class _ViewActionDock extends StatelessWidget {
+  const _ViewActionDock({
+    required this.open,
+    required this.maxActionsWidth,
+    required this.modelParts,
+    required this.gridVisible,
+    required this.floorVisible,
+    required this.onToggleMenu,
+    required this.onHideUi,
+    required this.onToggleGrid,
+    required this.onToggleFloor,
+    required this.onTogglePart,
+  });
+
+  final bool open;
+  final double maxActionsWidth;
+  final List<ViewerPart> modelParts;
+  final bool gridVisible;
+  final bool floorVisible;
+  final VoidCallback onToggleMenu;
+  final VoidCallback onHideUi;
+  final VoidCallback onToggleGrid;
+  final VoidCallback onToggleFloor;
+  final ValueChanged<ViewerPart> onTogglePart;
+
+  @override
+  Widget build(BuildContext context) {
+    final panelHeight = (MediaQuery.sizeOf(context).height * 0.36).clamp(188.0, 286.0).toDouble();
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.end,
+      children: [
+        ClipRect(
+          child: AnimatedAlign(
+            alignment: Alignment.bottomRight,
+            heightFactor: open ? 1 : 0,
+            duration: const Duration(milliseconds: 190),
+            curve: Curves.easeOutCubic,
+            child: Padding(
+              padding: const EdgeInsets.only(bottom: 10),
+              child: _PartVisibilityPanel(
+                parts: modelParts,
+                maxHeight: panelHeight,
+                onTogglePart: onTogglePart,
+              ),
+            ),
+          ),
+        ),
+        _ExpandableDockRow(
+          maxActionsWidth: maxActionsWidth,
+          open: open,
+          actions: [
+            _CircleIconButton(
+              tooltip: 'Hide UI',
+              icon: Icons.visibility_off_rounded,
+              onPressed: onHideUi,
+            ),
+            _CircleIconButton(
+              tooltip: 'Grid',
+              icon: Icons.grid_4x4_rounded,
+              selected: gridVisible,
+              onPressed: onToggleGrid,
+            ),
+            _CircleIconButton(
+              tooltip: 'Floor',
+              icon: Icons.crop_square_rounded,
+              selected: floorVisible,
+              onPressed: onToggleFloor,
+            ),
+          ],
+          anchor: _CircleIconButton(
+            tooltip: 'View',
+            icon: Icons.visibility_rounded,
+            selected: open,
+            onPressed: onToggleMenu,
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _PartVisibilityPanel extends StatelessWidget {
+  const _PartVisibilityPanel({
+    required this.parts,
+    required this.maxHeight,
+    required this.onTogglePart,
+  });
+
+  final List<ViewerPart> parts;
+  final double maxHeight;
+  final ValueChanged<ViewerPart> onTogglePart;
+
+  @override
+  Widget build(BuildContext context) {
+    final width = (MediaQuery.sizeOf(context).width - 40).clamp(228.0, 300.0).toDouble();
+    return ConstrainedBox(
+      constraints: BoxConstraints(maxWidth: width, maxHeight: maxHeight),
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: AppColors.surface.withOpacity(0.92),
+          border: Border.all(color: AppColors.line),
+          borderRadius: BorderRadius.circular(8),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(0.24),
+              blurRadius: 22,
+              offset: const Offset(0, 10),
+            ),
+          ],
+        ),
+        child: parts.isEmpty
+            ? const Padding(
+                padding: EdgeInsets.symmetric(horizontal: 14, vertical: 13),
+                child: Text(
+                  'No model parts',
+                  style: TextStyle(fontSize: 12, color: AppColors.textMuted),
+                ),
+              )
+            : ListView.separated(
+                padding: const EdgeInsets.symmetric(vertical: 8),
+                shrinkWrap: true,
+                itemCount: parts.length,
+                separatorBuilder: (context, index) => const Divider(
+                  height: 1,
+                  thickness: 1,
+                  color: AppColors.line,
+                ),
+                itemBuilder: (context, index) {
+                  final part = parts[index];
+                  return InkWell(
+                    onTap: () => onTogglePart(part),
+                    child: Padding(
+                      padding: const EdgeInsets.fromLTRB(12, 4, 8, 4),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              part.name,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                          ),
+                          Switch.adaptive(
+                            value: part.visible,
+                            onChanged: (_) => onTogglePart(part),
+                          ),
+                        ],
+                      ),
+                    ),
+                  );
+                },
+              ),
+      ),
     );
   }
 }
@@ -2282,6 +2611,60 @@ class _LibraryKindTab extends StatelessWidget {
                 ),
         ),
       ],
+    );
+  }
+}
+
+class _DancePackageRow extends StatelessWidget {
+  const _DancePackageRow({
+    required this.bundle,
+    required this.onTap,
+  });
+
+  final DanceAssetPackage bundle;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: AppColors.surfaceHigh,
+      borderRadius: BorderRadius.circular(8),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(8),
+        onTap: bundle.canApply ? onTap : null,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(14, 12, 12, 12),
+          child: Row(
+            children: [
+              const Icon(Icons.playlist_play_rounded, size: 24),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      bundle.name,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontWeight: FontWeight.w800),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      bundle.summary,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontSize: 12, color: AppColors.textMuted),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 12),
+              const Icon(Icons.chevron_right_rounded, size: 22, color: AppColors.textMuted),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }

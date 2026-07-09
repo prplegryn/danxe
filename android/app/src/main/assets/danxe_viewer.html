@@ -97,7 +97,8 @@
       hemiLight: null,
       keyLight: null,
       rimLight: null,
-      floor: null,
+      grid: null,
+      floorPlane: null,
       helper: null,
       mesh: null,
       audio: null,
@@ -115,7 +116,12 @@
       physicsEnabled: false,
       physicsWarningShown: false,
       recorder: null,
-      look: { ...defaultLook }
+      look: { ...defaultLook },
+      view: {
+        gridVisible: true,
+        floorVisible: false
+      },
+      parts: []
     };
     let ammoReadyPromise = null;
 
@@ -202,9 +208,22 @@
       state.rimLight = new THREE.DirectionalLight(0xb7d8ff, defaultLook.rim);
       state.rimLight.position.set(-18, 18, -24);
       state.scene.add(state.rimLight);
-      state.floor = new THREE.GridHelper(80, 40, 0x1e3a5f, 0x142033);
-      state.floor.position.y = 0;
-      state.scene.add(state.floor);
+      state.grid = new THREE.GridHelper(80, 40, 0x9ca3af, 0xd1d5db);
+      state.grid.position.y = 0;
+      state.scene.add(state.grid);
+      state.floorPlane = new THREE.Mesh(
+        new THREE.PlaneGeometry(80, 80),
+        new THREE.MeshStandardMaterial({
+          color: 0xd9c39e,
+          roughness: 0.88,
+          metalness: 0.0,
+          side: THREE.DoubleSide
+        })
+      );
+      state.floorPlane.rotation.x = -Math.PI / 2;
+      state.floorPlane.position.y = -0.015;
+      state.scene.add(state.floorPlane);
+      applyViewOptions();
       applyLook();
 
       window.addEventListener('resize', resize, false);
@@ -216,6 +235,28 @@
       state.look = normalizeLook(payload);
       applyLook();
       postStatus();
+    }
+
+    function setView(payload) {
+      const source = payload && typeof payload === 'object' ? payload : {};
+      if ('floorVisible' in source) {
+        state.view.floorVisible = source.floorVisible === true;
+      }
+      if ('gridVisible' in source) {
+        state.view.gridVisible = source.gridVisible === true;
+      }
+      if (state.view.floorVisible) {
+        state.view.gridVisible = false;
+      }
+      applyViewOptions();
+      postStatus();
+    }
+
+    function applyViewOptions() {
+      const floorVisible = state.view.floorVisible === true;
+      const gridVisible = state.view.gridVisible === true && !floorVisible;
+      if (state.grid) state.grid.visible = gridVisible;
+      if (state.floorPlane) state.floorPlane.visible = floorVisible;
     }
 
     function normalizeLook(payload) {
@@ -269,9 +310,7 @@
       if (state.rimLight) {
         state.rimLight.intensity = look.rim;
       }
-      if (state.floor) {
-        state.floor.visible = look.floor;
-      }
+      applyViewOptions();
       if (state.mesh) {
         state.mesh.traverse((child) => {
           const materials = Array.isArray(child.material) ? child.material : [child.material];
@@ -499,6 +538,7 @@ vec3 danxeApplyLook(vec3 color) {
       }
       state.helper = createAnimationHelper();
       state.mesh = null;
+      state.parts = [];
       state.audio = null;
       state.current = 0;
       state.duration = 0;
@@ -508,6 +548,7 @@ vec3 danxeApplyLook(vec3 color) {
       state.physicsEnabled = false;
       state.physicsWarningShown = false;
       if (state.controls) state.controls.enabled = true;
+      postParts();
     }
 
     function createAnimationHelper() {
@@ -556,6 +597,68 @@ vec3 danxeApplyLook(vec3 color) {
       });
     }
 
+    function publishModelParts() {
+      state.parts = buildModelParts();
+      postParts();
+    }
+
+    function postParts() {
+      post({ type: 'parts', parts: state.parts || [] });
+    }
+
+    function buildModelParts() {
+      if (!state.mesh) return [];
+      const parts = [];
+      let counter = 0;
+      state.mesh.traverse((child) => {
+        if (!child.material) return;
+        const materials = Array.isArray(child.material) ? child.material : [child.material];
+        const mmdMaterials = child.geometry &&
+          child.geometry.userData &&
+          child.geometry.userData.MMD &&
+          Array.isArray(child.geometry.userData.MMD.materials)
+          ? child.geometry.userData.MMD.materials
+          : [];
+        materials.forEach((material, index) => {
+          if (!material) return;
+          if (!material.userData) material.userData = {};
+          const id = `mat:${counter++}`;
+          const meta = mmdMaterials[index] || {};
+          const rawName = material.name || meta.name || meta.englishName || meta.nameEn || `Part ${counter}`;
+          material.userData.danxePartId = id;
+          material.userData.danxePartName = String(rawName).trim() || `Part ${counter}`;
+          if (typeof material.visible !== 'boolean') material.visible = true;
+          parts.push({
+            id,
+            name: material.userData.danxePartName,
+            visible: material.visible !== false
+          });
+        });
+      });
+      return parts;
+    }
+
+    function setPartVisibility(payload) {
+      const id = payload && payload.id ? String(payload.id) : '';
+      const visible = !(payload && payload.visible === false);
+      if (!id || !state.mesh) return;
+      state.mesh.traverse((child) => {
+        if (!child.material) return;
+        const materials = Array.isArray(child.material) ? child.material : [child.material];
+        for (const material of materials) {
+          if (material && material.userData && material.userData.danxePartId === id) {
+            material.visible = visible;
+            material.needsUpdate = true;
+          }
+        }
+      });
+      state.parts = (state.parts || []).map((part) => (
+        part.id === id ? { ...part, visible } : part
+      ));
+      postParts();
+      postStatus();
+    }
+
     async function loadScene(input) {
       initRenderer();
       const preserveCamera = state.loaded && state.modelUrl === input.modelUrl;
@@ -582,6 +685,7 @@ vec3 danxeApplyLook(vec3 color) {
         state.mesh.frustumCulled = false;
         sanitizeMmdMetadata(state.mesh);
         state.scene.add(state.mesh);
+        publishModelParts();
         applyLook();
         const helperState = addMeshToHelper(state.mesh, mmd.animation, physicsReady);
         state.physicsEnabled = helperState.physics;
@@ -1216,7 +1320,9 @@ vec3 danxeApplyLook(vec3 color) {
         duration: state.duration,
         speed: state.speed,
         cameraMotion: state.cameraMotion,
-        physics: state.physicsEnabled
+        physics: state.physicsEnabled,
+        gridVisible: state.view.gridVisible === true && state.view.floorVisible !== true,
+        floorVisible: state.view.floorVisible === true
       });
     }
 
@@ -1244,6 +1350,8 @@ vec3 danxeApplyLook(vec3 color) {
       setCamera,
       setCameraPreset,
       setLook,
+      setView,
+      setPartVisibility,
       exportVideo
     };
     initRenderer();

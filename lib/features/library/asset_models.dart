@@ -45,6 +45,8 @@ class LibraryAsset {
     required this.motionCandidates,
     required this.textureCandidates,
     required this.audioCandidates,
+    this.packageId = '',
+    this.packageName = '',
   });
 
   final String id;
@@ -59,6 +61,8 @@ class LibraryAsset {
   final List<String> motionCandidates;
   final List<String> textureCandidates;
   final List<String> audioCandidates;
+  final String packageId;
+  final String packageName;
 
   bool get hasRenderableModel => pmxCandidates.isNotEmpty;
   bool get hasMotion => motionCandidates.isNotEmpty;
@@ -78,6 +82,8 @@ class LibraryAsset {
       motionCandidates: _stringList(json['motionCandidates']),
       textureCandidates: _stringList(json['textureCandidates']),
       audioCandidates: _stringList(json['audioCandidates']),
+      packageId: json['packageId'] as String? ?? '',
+      packageName: json['packageName'] as String? ?? '',
     );
   }
 
@@ -95,6 +101,8 @@ class LibraryAsset {
       'motionCandidates': motionCandidates,
       'textureCandidates': textureCandidates,
       'audioCandidates': audioCandidates,
+      'packageId': packageId,
+      'packageName': packageName,
     };
   }
 
@@ -106,3 +114,32 @@ class LibraryAsset {
   }
 }
 
+class DanceAssetPackage {
+  const DanceAssetPackage({
+    required this.id,
+    required this.name,
+    this.motion,
+    this.audio,
+    this.face,
+    this.camera,
+  });
+
+  final String id;
+  final String name;
+  final LibraryAsset? motion;
+  final LibraryAsset? audio;
+  final LibraryAsset? face;
+  final LibraryAsset? camera;
+
+  bool get canApply => motion != null || audio != null || face != null;
+
+  String get summary {
+    final parts = <String>[
+      if (motion != null) 'Motion',
+      if (audio != null) 'Audio',
+      if (face != null) 'Face',
+      if (camera != null) 'Camera ignored',
+    ];
+    return parts.isEmpty ? 'No playable assets' : parts.join(' / ');
+  }
+}
