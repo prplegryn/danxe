@@ -90,6 +90,15 @@
       toon: 1.0,
       texture: 1.0
     });
+    const renderProfile = Object.freeze({
+      name: 'toon-outline-mobile',
+      maxPixelRatio: 1.35,
+      shadows: false,
+      materialShader: false,
+      outlineThickness: 0.003,
+      outlineAlpha: 0.66,
+      contactShadow: true
+    });
     const state = {
       renderer: null,
       effect: null,
@@ -132,16 +141,16 @@
     let ammoReadyPromise = null;
 
     const physicsProfile = Object.freeze({
-      name: 'weighted-stable',
+      name: 'mobile-balanced',
       gravityY: -118,
-      unitStep: 1 / 80,
-      maxStepNum: 4,
-      playbackStep: 1 / 75,
-      exportStep: 1 / 90,
-      loadWarmup: 120,
-      seekWarmup: 72,
-      exportWarmup: 150,
-      loopWarmup: 36
+      unitStep: 1 / 60,
+      maxStepNum: 2,
+      playbackStep: 1 / 45,
+      exportStep: 1 / 60,
+      loadWarmup: 72,
+      seekWarmup: 36,
+      exportWarmup: 90,
+      loopWarmup: 18
     });
 
     const physicsParams = {
@@ -208,17 +217,17 @@
       state.scene.add(state.camera);
 
       state.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false, preserveDrawingBuffer: true });
-      state.renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+      state.renderer.setPixelRatio(Math.min(devicePixelRatio, renderProfile.maxPixelRatio));
       state.renderer.setSize(innerWidth, innerHeight);
       state.renderer.outputColorSpace = THREE.SRGBColorSpace;
       state.renderer.toneMapping = THREE.LinearToneMapping;
       state.renderer.toneMappingExposure = defaultLook.exposure;
-      state.renderer.shadowMap.enabled = true;
+      state.renderer.shadowMap.enabled = renderProfile.shadows === true;
       state.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
       state.effect = new OutlineEffect(state.renderer, {
-        defaultThickness: 0.0032,
+        defaultThickness: renderProfile.outlineThickness,
         defaultColor: [0.018, 0.021, 0.028],
-        defaultAlpha: 0.58,
+        defaultAlpha: renderProfile.outlineAlpha,
         defaultKeepAlive: true
       });
       stage.appendChild(state.renderer.domElement);
@@ -235,8 +244,8 @@
       state.keyLight = new THREE.DirectionalLight(0xffffff, defaultLook.key);
       state.keyLight.position.set(20, 32, 18);
       state.keyLight.target = state.keyLightTarget;
-      state.keyLight.castShadow = true;
-      state.keyLight.shadow.mapSize.set(1536, 1536);
+      state.keyLight.castShadow = renderProfile.shadows === true;
+      state.keyLight.shadow.mapSize.set(512, 512);
       state.keyLight.shadow.bias = -0.00018;
       state.keyLight.shadow.normalBias = 0.018;
       state.scene.add(state.keyLight);
@@ -255,7 +264,7 @@
           side: THREE.DoubleSide
         })
       );
-      state.floorPlane.receiveShadow = true;
+      state.floorPlane.receiveShadow = renderProfile.shadows === true;
       state.floorPlane.rotation.x = -Math.PI / 2;
       state.floorPlane.position.y = -0.015;
       state.scene.add(state.floorPlane);
@@ -379,8 +388,10 @@
 
     function applyMaterialLook(material, look, enabled) {
       if (!material) return;
-      ensureMaterialLookShader(material);
-      updateLookShaderUniforms(material, look, enabled);
+      if (renderProfile.materialShader === true) {
+        ensureMaterialLookShader(material);
+        updateLookShaderUniforms(material, look, enabled);
+      }
       prepareTextureColorSpace(material);
       const base = materialLookBase(material);
       if (!base) return;
@@ -675,17 +686,17 @@ vec3 danxeApplyLook(vec3 color) {
       if (!mesh) return;
       mesh.traverse((child) => {
         if (!child.isMesh) return;
-        child.castShadow = true;
-        child.receiveShadow = true;
+        child.castShadow = renderProfile.shadows === true;
+        child.receiveShadow = renderProfile.shadows === true;
         const materials = Array.isArray(child.material) ? child.material : [child.material];
         for (const material of materials) {
           if (!material) continue;
-          material.shadowSide = THREE.FrontSide;
+          material.shadowSide = renderProfile.shadows === true ? THREE.FrontSide : null;
           if (!material.userData) material.userData = {};
           material.userData.outlineParameters = {
-            thickness: 0.0032,
+            thickness: renderProfile.outlineThickness,
             color: [0.018, 0.021, 0.028],
-            alpha: 0.58,
+            alpha: renderProfile.outlineAlpha,
             visible: true,
             keepAlive: true
           };
@@ -710,6 +721,10 @@ vec3 danxeApplyLook(vec3 color) {
 
     function updateGroundingForModels() {
       if (!state.contactShadow) return;
+      if (renderProfile.contactShadow !== true) {
+        state.contactShadow.visible = false;
+        return;
+      }
       const box = sceneModelBounds();
       if (!box) {
         state.contactShadow.visible = false;
@@ -1126,6 +1141,7 @@ vec3 danxeApplyLook(vec3 color) {
         `joints=${stats.joints}`,
         `bones=${stats.bones}`,
         `profile=${physicsProfile.name}`,
+        `render=${renderProfile.name}`,
         `gravity=(${formatNumber(gravity.x)},${formatNumber(gravity.y)},${formatNumber(gravity.z)})`,
         `warmup=${physicsParams.warmup}`,
         `unitStep=${formatNumber(physicsParams.unitStep)}`,
@@ -1180,7 +1196,23 @@ vec3 danxeApplyLook(vec3 color) {
       return error && error.message ? error.message : String(error);
     }
 
-    function loadModelAndMotion(loader, modelUrl, motionUrls) {
+    async function loadModelAndMotion(loader, modelUrl, motionUrls) {
+      try {
+        return await loadModelAndMotionDirect(loader, modelUrl, motionUrls);
+      } catch (error) {
+        const retry = await createSanitizedPmxUrl(modelUrl, error);
+        if (!retry) throw error;
+        try {
+          return await loadModelAndMotionDirect(loader, retry.url, motionUrls);
+        } catch (retryError) {
+          throw new Error(`PMX compatibility retry failed: ${errorMessage(retryError)}`);
+        } finally {
+          URL.revokeObjectURL(retry.url);
+        }
+      }
+    }
+
+    function loadModelAndMotionDirect(loader, modelUrl, motionUrls) {
       return new Promise((resolve, reject) => {
         if (motionUrls.length > 0) {
           loader.loadWithAnimation(modelUrl, motionUrls, resolve, undefined, reject);
@@ -1188,6 +1220,374 @@ vec3 danxeApplyLook(vec3 color) {
           loader.load(modelUrl, (mesh) => resolve({ mesh, animation: undefined }), undefined, reject);
         }
       });
+    }
+
+    async function createSanitizedPmxUrl(modelUrl, originalError) {
+      try {
+        const response = await fetch(modelUrl, { cache: 'no-store' });
+        if (!response.ok) return null;
+        const result = sanitizePmxForLoader(await response.arrayBuffer(), modelUrl);
+        if (!result || !result.bytes) return null;
+        const blob = new Blob([result.bytes], { type: 'application/octet-stream' });
+        const url = URL.createObjectURL(blob);
+        const fixes = result.fixes.length > 0 ? result.fixes.join(', ') : 'normalized PMX';
+        post({
+          type: 'message',
+          message: `PMX compatibility retry: ${fixes}; original error: ${errorMessage(originalError)}.`,
+          hidden: true
+        });
+        return { url };
+      } catch (error) {
+        post({
+          type: 'message',
+          message: `PMX compatibility retry unavailable: ${errorMessage(error)}.`,
+          hidden: true
+        });
+        return null;
+      }
+    }
+
+    function sanitizePmxForLoader(arrayBuffer, modelUrl) {
+      const source = new Uint8Array(arrayBuffer);
+      if (source.length < 16 || source[0] !== 0x50 || source[1] !== 0x4d || source[2] !== 0x58 || source[3] !== 0x20) {
+        return { bytes: source, fixes: [] };
+      }
+
+      const view = new DataView(source.buffer, source.byteOffset, source.byteLength);
+      let p = 8;
+      const headerSize = readUint8(view, p);
+      p += 1;
+      requirePmx(p + headerSize <= source.length, 'Invalid PMX header.');
+      const header = source.slice(p, p + headerSize);
+      p += headerSize;
+      requirePmx(header.length >= 8, 'PMX header is too short.');
+
+      const textEncoding = header[0];
+      const addUvCount = header[1];
+      const vertexIndexSize = header[2];
+      const textureIndexSize = header[3];
+      const materialIndexSize = header[4];
+      const boneIndexSize = header[5];
+      const morphIndexSize = header[6];
+      const rigidBodyIndexSize = header[7];
+      requirePmx(textEncoding === 0 || textEncoding === 1, 'Unsupported PMX text encoding.');
+      validateIndexSize(vertexIndexSize);
+      validateIndexSize(textureIndexSize);
+      validateIndexSize(materialIndexSize);
+      validateIndexSize(boneIndexSize);
+      validateIndexSize(morphIndexSize);
+      validateIndexSize(rigidBodyIndexSize);
+
+      for (let i = 0; i < 4; i++) p = skipPmxText(view, p);
+
+      const vertexCount = readInt32(view, p);
+      p += 4;
+      requirePmx(vertexCount >= 0, 'Invalid PMX vertex count.');
+      for (let i = 0; i < vertexCount; i++) {
+        p += 12 + 12 + 8 + addUvCount * 16;
+        const weightType = readUint8(view, p);
+        p += 1;
+        if (weightType === 0) p += boneIndexSize;
+        else if (weightType === 1) p += boneIndexSize * 2 + 4;
+        else if (weightType === 2) p += boneIndexSize * 4 + 16;
+        else if (weightType === 3) p += boneIndexSize * 2 + 4 + 36;
+        else if (weightType === 4) p += boneIndexSize * 4 + 16;
+        else throw new Error(`Unknown PMX weight type: ${weightType}`);
+        p += 4;
+        requirePmx(p <= source.length, 'Truncated PMX vertex data.');
+      }
+
+      const faceIndexCount = readInt32(view, p);
+      p += 4;
+      requirePmx(faceIndexCount >= 0, 'Invalid PMX face index count.');
+      p += faceIndexCount * vertexIndexSize;
+      requirePmx(p <= source.length, 'Truncated PMX face index data.');
+
+      const textureCount = readInt32(view, p);
+      p += 4;
+      requirePmx(textureCount >= 0, 'Invalid PMX texture count.');
+      const textureBlockStart = p;
+      const textureChunks = [];
+      let absoluteTextures = 0;
+      for (let i = 0; i < textureCount; i++) {
+        const read = readPmxText(view, source, p, textEncoding);
+        const normalized = absoluteTextureRef(read.text, modelUrl);
+        if (normalized !== read.text) absoluteTextures += 1;
+        textureChunks.push(writePmxTextBytes(normalized, textEncoding));
+        p = read.next;
+      }
+
+      const tail = source.slice(p);
+      const tailFixes = sanitizePmxMaterialAndMorphTail(tail, {
+        textEncoding,
+        vertexIndexSize,
+        textureIndexSize,
+        materialIndexSize,
+        boneIndexSize,
+        morphIndexSize,
+        rigidBodyIndexSize,
+        textureCount
+      });
+      const outputLength = textureBlockStart + textureChunks.reduce((sum, chunk) => sum + chunk.length, 0) + tail.length;
+      const output = new Uint8Array(outputLength);
+      let o = 0;
+      output.set(source.slice(0, textureBlockStart), o);
+      o += textureBlockStart;
+      for (const chunk of textureChunks) {
+        output.set(chunk, o);
+        o += chunk.length;
+      }
+      output.set(tail, o);
+
+      const fixes = [];
+      if (absoluteTextures > 0) fixes.push(`${absoluteTextures} texture paths`);
+      if (tailFixes.badTexture > 0) fixes.push(`${tailFixes.badTexture} bad material texture refs`);
+      if (tailFixes.sphere > 0) fixes.push(`${tailFixes.sphere} sphere maps disabled`);
+      if (tailFixes.toon > 0) fixes.push(`${tailFixes.toon} external toon refs disabled`);
+      if (tailFixes.materialMorph > 0) fixes.push(`${tailFixes.materialMorph} bad material morph refs`);
+      if (tailFixes.groupMorph > 0) fixes.push(`${tailFixes.groupMorph} bad group morph refs`);
+      return { bytes: output, fixes };
+    }
+
+    function sanitizePmxMaterialAndMorphTail(tail, config) {
+      const view = new DataView(tail.buffer, tail.byteOffset, tail.byteLength);
+      const fixes = {
+        badTexture: 0,
+        sphere: 0,
+        toon: 0,
+        materialMorph: 0,
+        groupMorph: 0
+      };
+      let p = 0;
+      const materialCount = readInt32(view, p);
+      p += 4;
+      requirePmx(materialCount >= 0, 'Invalid PMX material count.');
+      for (let i = 0; i < materialCount; i++) {
+        p = skipPmxText(view, p);
+        p = skipPmxText(view, p);
+        p += 12;
+        const alphaOffset = p;
+        const alpha = view.getFloat32(alphaOffset, true);
+        if (!Number.isFinite(alpha) || alpha < 0 || alpha > 1) {
+          view.setFloat32(alphaOffset, Number.isFinite(alpha) ? clamp(alpha, 0, 1) : 1, true);
+        }
+        p += 4;
+        p += 12 + 4 + 12 + 1 + 16 + 4;
+        const textureOffset = p;
+        const textureIndex = readSignedIndex(view, textureOffset, config.textureIndexSize);
+        if (textureIndex < -1 || textureIndex >= config.textureCount) {
+          writeSignedIndex(view, textureOffset, config.textureIndexSize, -1);
+          fixes.badTexture += 1;
+        }
+        p += config.textureIndexSize;
+        const sphereOffset = p;
+        const sphereIndex = readSignedIndex(view, sphereOffset, config.textureIndexSize);
+        p += config.textureIndexSize;
+        const sphereModeOffset = p;
+        const sphereMode = readUint8(view, p);
+        p += 1;
+        if (sphereIndex !== -1 || sphereMode !== 0) {
+          writeSignedIndex(view, sphereOffset, config.textureIndexSize, -1);
+          tail[sphereModeOffset] = 0;
+          fixes.sphere += 1;
+        }
+        const toonFlag = readUint8(view, p);
+        p += 1;
+        if (toonFlag === 0) {
+          const toonOffset = p;
+          const toonIndex = readSignedIndex(view, toonOffset, config.textureIndexSize);
+          if (toonIndex !== -1) {
+            writeSignedIndex(view, toonOffset, config.textureIndexSize, -1);
+            fixes.toon += 1;
+          }
+          p += config.textureIndexSize;
+        } else {
+          const toonOffset = p;
+          const toonIndex = readUint8(view, p);
+          if (toonIndex > 9) {
+            tail[toonOffset] = 0;
+            fixes.toon += 1;
+          }
+          p += 1;
+        }
+        p = skipPmxText(view, p);
+        const faceCount = readInt32(view, p);
+        requirePmx(faceCount >= 0, 'Invalid PMX material face count.');
+        p += 4;
+      }
+
+      const boneCount = readInt32(view, p);
+      p += 4;
+      requirePmx(boneCount >= 0, 'Invalid PMX bone count.');
+      for (let i = 0; i < boneCount; i++) {
+        p = skipPmxText(view, p);
+        p = skipPmxText(view, p);
+        p += 12 + config.boneIndexSize + 4;
+        const flags = readUint16(view, p);
+        p += 2;
+        p += (flags & 0x0001) !== 0 ? config.boneIndexSize : 12;
+        if ((flags & 0x0100) !== 0 || (flags & 0x0200) !== 0) p += config.boneIndexSize + 4;
+        if ((flags & 0x0400) !== 0) p += 12;
+        if ((flags & 0x0800) !== 0) p += 24;
+        if ((flags & 0x2000) !== 0) p += 4;
+        if ((flags & 0x0020) !== 0) {
+          p += config.boneIndexSize + 4 + 4;
+          const linkCount = readInt32(view, p);
+          p += 4;
+          requirePmx(linkCount >= 0, 'Invalid PMX IK link count.');
+          for (let j = 0; j < linkCount; j++) {
+            p += config.boneIndexSize;
+            const hasLimit = readUint8(view, p);
+            p += 1;
+            if (hasLimit) p += 24;
+          }
+        }
+        requirePmx(p <= tail.length, 'Truncated PMX bone data.');
+      }
+
+      const morphCount = readInt32(view, p);
+      p += 4;
+      requirePmx(morphCount >= 0, 'Invalid PMX morph count.');
+      for (let i = 0; i < morphCount; i++) {
+        p = skipPmxText(view, p);
+        p = skipPmxText(view, p);
+        p += 1;
+        const morphType = readUint8(view, p);
+        p += 1;
+        const elementCount = readInt32(view, p);
+        p += 4;
+        requirePmx(elementCount >= 0, 'Invalid PMX morph element count.');
+        for (let j = 0; j < elementCount; j++) {
+          if (morphType === 0) {
+            const morphIndexOffset = p;
+            const morphIndex = readSignedIndex(view, morphIndexOffset, config.morphIndexSize);
+            if (morphIndex < 0 || morphIndex >= morphCount) {
+              writeSignedIndex(view, morphIndexOffset, config.morphIndexSize, 0);
+              view.setFloat32(p + config.morphIndexSize, 0, true);
+              fixes.groupMorph += 1;
+            }
+            p += config.morphIndexSize + 4;
+          } else if (morphType === 1) {
+            p += config.vertexIndexSize + 12;
+          } else if (morphType === 2) {
+            p += config.boneIndexSize + 12 + 16;
+          } else if (morphType >= 3 && morphType <= 7) {
+            p += config.vertexIndexSize + 16;
+          } else if (morphType === 8) {
+            const materialIndexOffset = p;
+            const materialIndex = readSignedIndex(view, materialIndexOffset, config.materialIndexSize);
+            if (materialIndex !== -1 && (materialIndex < 0 || materialIndex >= materialCount)) {
+              writeSignedIndex(view, materialIndexOffset, config.materialIndexSize, -1);
+              fixes.materialMorph += 1;
+            }
+            p += config.materialIndexSize + 1 + 112;
+          } else if (morphType === 9) {
+            p += config.morphIndexSize + 4;
+          } else if (morphType === 10) {
+            p += config.rigidBodyIndexSize + 1 + 24;
+          } else {
+            throw new Error(`Unknown PMX morph type: ${morphType}`);
+          }
+          requirePmx(p <= tail.length, 'Truncated PMX morph data.');
+        }
+      }
+      return fixes;
+    }
+
+    function readInt32(view, offset) {
+      requirePmx(offset + 4 <= view.byteLength, 'PMX data is truncated.');
+      return view.getInt32(offset, true);
+    }
+
+    function readUint16(view, offset) {
+      requirePmx(offset + 2 <= view.byteLength, 'PMX data is truncated.');
+      return view.getUint16(offset, true);
+    }
+
+    function readUint8(view, offset) {
+      requirePmx(offset + 1 <= view.byteLength, 'PMX data is truncated.');
+      return view.getUint8(offset);
+    }
+
+    function readSignedIndex(view, offset, size) {
+      requirePmx(offset + size <= view.byteLength, 'PMX index is truncated.');
+      if (size === 1) return view.getInt8(offset);
+      if (size === 2) return view.getInt16(offset, true);
+      if (size === 4) return view.getInt32(offset, true);
+      throw new Error(`Unsupported PMX index size: ${size}`);
+    }
+
+    function writeSignedIndex(view, offset, size, value) {
+      requirePmx(offset + size <= view.byteLength, 'PMX index is truncated.');
+      if (size === 1) view.setInt8(offset, value);
+      else if (size === 2) view.setInt16(offset, value, true);
+      else if (size === 4) view.setInt32(offset, value, true);
+      else throw new Error(`Unsupported PMX index size: ${size}`);
+    }
+
+    function skipPmxText(view, offset) {
+      const length = readInt32(view, offset);
+      const next = offset + 4 + length;
+      requirePmx(length >= 0 && next <= view.byteLength, 'Invalid PMX string length.');
+      return next;
+    }
+
+    function readPmxText(view, bytes, offset, encodingFlag) {
+      const length = readInt32(view, offset);
+      const start = offset + 4;
+      const next = start + length;
+      requirePmx(length >= 0 && next <= bytes.length, 'Invalid PMX string length.');
+      const raw = bytes.slice(start, next);
+      const decoder = encodingFlag === 0 ? pmxUtf16Decoder() : pmxUtf8Decoder();
+      return { text: decoder.decode(raw), next };
+    }
+
+    function writePmxTextBytes(text, encodingFlag) {
+      const raw = encodingFlag === 0 ? encodeUtf16Le(text) : new TextEncoder().encode(text);
+      const output = new Uint8Array(raw.length + 4);
+      const view = new DataView(output.buffer);
+      view.setInt32(0, raw.length, true);
+      output.set(raw, 4);
+      return output;
+    }
+
+    function pmxUtf8Decoder() {
+      if (!pmxUtf8Decoder.instance) pmxUtf8Decoder.instance = new TextDecoder('utf-8');
+      return pmxUtf8Decoder.instance;
+    }
+
+    function pmxUtf16Decoder() {
+      if (!pmxUtf16Decoder.instance) pmxUtf16Decoder.instance = new TextDecoder('utf-16le');
+      return pmxUtf16Decoder.instance;
+    }
+
+    function encodeUtf16Le(text) {
+      const output = new Uint8Array(text.length * 2);
+      for (let i = 0; i < text.length; i++) {
+        const code = text.charCodeAt(i);
+        output[i * 2] = code & 0xff;
+        output[i * 2 + 1] = code >> 8;
+      }
+      return output;
+    }
+
+    function absoluteTextureRef(ref, modelUrl) {
+      const normalized = String(ref || '').replace(/\\/g, '/').trim();
+      if (!normalized) return normalized;
+      if (/^(?:https?:|blob:|data:|file:|content:)/i.test(normalized)) return normalized;
+      try {
+        return new URL(normalized, modelUrl).href;
+      } catch (_) {
+        return normalized;
+      }
+    }
+
+    function validateIndexSize(size) {
+      requirePmx(size === 1 || size === 2 || size === 4, 'Unsupported PMX index size.');
+    }
+
+    function requirePmx(condition, message) {
+      if (!condition) throw new Error(message);
     }
 
     function loadCameraAnimation(loader, urls) {

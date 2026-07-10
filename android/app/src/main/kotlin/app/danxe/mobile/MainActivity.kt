@@ -658,12 +658,21 @@ class MainActivity : FlutterActivity() {
         val output = mutableListOf<Byte>()
         output.addAll(data.copyOfRange(0, p).toList())
         val pmxNewDir = pmxNewPath.substringBeforeLast('/', "")
+        val renameLookup = linkedMapOf<String, String>()
+        renameMap.forEach { (oldPath, newPath) ->
+            val normalizedOld = normalizePosixPath(oldPath)
+            renameLookup[normalizedOld] = newPath
+            renameLookup[normalizedOld.lowercase(Locale.US)] = newPath
+        }
         repeat(textureCount) {
             val read = readPmxText(data, p, textEncoding)
             val originalRef = read.text
             val fullOldTexture = resolveTexturePath(pmxOldPath, originalRef)
-            val newRef = if (fullOldTexture != null && renameMap.containsKey(fullOldTexture)) {
-                relativePosixPath(pmxNewDir, renameMap.getValue(fullOldTexture))
+            val renamedTexture = fullOldTexture?.let { texturePath ->
+                renameLookup[texturePath] ?: renameLookup[texturePath.lowercase(Locale.US)]
+            }
+            val newRef = if (renamedTexture != null) {
+                relativePosixPath(pmxNewDir, renamedTexture)
             } else {
                 originalRef
             }
