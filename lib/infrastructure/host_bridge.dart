@@ -134,18 +134,14 @@ class HostBridge {
   }
 
   Future<void> viewerLoadScene({
-    required LibraryAsset? model,
-    LibraryAsset? motion,
+    required List<AppliedModelSlot> models,
     LibraryAsset? camera,
     LibraryAsset? audio,
-    LibraryAsset? face,
   }) {
     final scene = _buildScene(
-      model: model,
-      motion: motion,
+      models: models,
       camera: camera,
       audio: audio,
-      face: face,
     );
     return _channel.invokeMethod<void>(
       'viewerLoadScene',
@@ -220,6 +216,18 @@ class HostBridge {
     );
   }
 
+  Future<void> viewerSetModelTransform({
+    required String id,
+    required double x,
+    required double y,
+    required double z,
+  }) {
+    return _channel.invokeMethod<void>(
+      'viewerSetModelTransform',
+      <String, Object?>{'id': id, 'x': x, 'y': y, 'z': z},
+    );
+  }
+
   Future<String> viewerExport(ExportSettings settings) async {
     final path = await _channel.invokeMethod<String>(
       'viewerExport',
@@ -232,24 +240,39 @@ class HostBridge {
   }
 
   Map<String, Object?> _buildScene({
-    required LibraryAsset? model,
-    LibraryAsset? motion,
+    required List<AppliedModelSlot> models,
     LibraryAsset? camera,
     LibraryAsset? audio,
-    LibraryAsset? face,
   }) {
-    final modelUrl = model == null || model.pmxCandidates.isEmpty
-        ? null
-        : _assetUrl(model, model.pmxCandidates.first);
-    final motionUrls = <String>[
-      if (motion != null)
-        ...motion.motionCandidates.map((path) => _assetUrl(motion, path)),
-      if (face != null)
-        ...face.motionCandidates.map((path) => _assetUrl(face, path)),
-    ];
+    final renderableModels = models.where((slot) => slot.model.pmxCandidates.isNotEmpty);
+    final sceneModels = renderableModels
+        .map((slot) {
+          final motionUrls = <String>[
+            if (slot.motion != null)
+              ...slot.motion!.motionCandidates.map((path) => _assetUrl(slot.motion!, path)),
+            if (slot.face != null)
+              ...slot.face!.motionCandidates.map((path) => _assetUrl(slot.face!, path)),
+          ];
+          return <String, Object?>{
+            'id': slot.id,
+            'modelUrl': _assetUrl(slot.model, slot.model.pmxCandidates.first),
+            'motionUrls': motionUrls,
+            'modelName': slot.model.name,
+            'motionName': slot.motion?.name,
+            'faceName': slot.face?.name,
+            'transform': <String, Object?>{
+              'x': slot.x,
+              'y': slot.y,
+              'z': slot.z,
+            },
+          };
+        })
+        .toList(growable: false);
+    final first = sceneModels.isEmpty ? null : sceneModels.first;
     return <String, Object?>{
-      'modelUrl': modelUrl,
-      'motionUrls': motionUrls,
+      'models': sceneModels,
+      'modelUrl': first == null ? null : first['modelUrl'],
+      'motionUrls': first == null ? const <String>[] : first['motionUrls'],
       'cameraUrls': camera == null
           ? const <String>[]
           : camera.motionCandidates.map((path) => _assetUrl(camera, path)).toList(),
@@ -258,11 +281,11 @@ class HostBridge {
           : audio.audioCandidates.isNotEmpty
               ? _assetUrl(audio, audio.audioCandidates.first)
               : Uri.file(audio.sourcePath).toString(),
-      'modelName': model?.name,
-      'motionName': motion?.name,
+      'modelName': first == null ? null : first['modelName'],
+      'motionName': first == null ? null : first['motionName'],
       'cameraName': camera?.name,
       'audioName': audio?.name,
-      'faceName': face?.name,
+      'faceName': first == null ? null : first['faceName'],
     };
   }
 

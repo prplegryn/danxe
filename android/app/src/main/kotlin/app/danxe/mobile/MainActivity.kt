@@ -68,6 +68,7 @@ class MainActivity : FlutterActivity() {
                     "viewerSetLook" -> viewerSetLook(call, result)
                     "viewerSetViewOptions" -> viewerSetViewOptions(call, result)
                     "viewerSetPartVisibility" -> viewerSetPartVisibility(call, result)
+                    "viewerSetModelTransform" -> viewerSetModelTransform(call, result)
                     "viewerExport" -> viewerExport(call, result)
                     else -> result.notImplemented()
                 }
@@ -237,6 +238,15 @@ class MainActivity : FlutterActivity() {
             .put("id", call.argument<String>("id") ?: "")
             .put("visible", call.argument<Boolean>("visible") ?: true)
         viewerCommand("setPartVisibility", result, payload)
+    }
+
+    private fun viewerSetModelTransform(call: MethodCall, result: MethodChannel.Result) {
+        val payload = JSONObject()
+            .put("id", call.argument<String>("id") ?: "")
+            .put("x", call.argument<Double>("x") ?: 0.0)
+            .put("y", call.argument<Double>("y") ?: 0.0)
+            .put("z", call.argument<Double>("z") ?: 0.0)
+        viewerCommand("setModelTransform", result, payload)
     }
 
     private fun viewerExport(call: MethodCall, result: MethodChannel.Result) {

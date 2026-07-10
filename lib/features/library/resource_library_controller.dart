@@ -12,7 +12,8 @@ class ResourceLibraryController extends ChangeNotifier {
   bool _busy = false;
   String? _error;
   List<LibraryAsset> _assets = const [];
-  LibraryAsset? _selectedModel;
+  List<AppliedModelSlot> _modelSlots = const [];
+  String? _activeModelSlotId;
   LibraryAsset? _selectedMotion;
   LibraryAsset? _selectedCamera;
   LibraryAsset? _selectedAudio;
@@ -21,11 +22,43 @@ class ResourceLibraryController extends ChangeNotifier {
   bool get busy => _busy;
   String? get error => _error;
   List<LibraryAsset> get assets => _assets;
-  LibraryAsset? get selectedModel => _selectedModel;
-  LibraryAsset? get selectedMotion => _selectedMotion;
+  List<AppliedModelSlot> get modelSlots => _modelSlots;
+  AppliedModelSlot? get activeModelSlot {
+    if (_modelSlots.isEmpty) return null;
+    for (final slot in _modelSlots) {
+      if (slot.id == _activeModelSlotId) return slot;
+    }
+    return _modelSlots.first;
+  }
+
+  LibraryAsset? get selectedModel => activeModelSlot?.model;
+  LibraryAsset? get selectedMotion {
+    final active = activeModelSlot;
+    return active == null ? _selectedMotion : active.motion;
+  }
+
   LibraryAsset? get selectedCamera => _selectedCamera;
   LibraryAsset? get selectedAudio => _selectedAudio;
-  LibraryAsset? get selectedFace => _selectedFace;
+  LibraryAsset? get selectedFace {
+    final active = activeModelSlot;
+    return active == null ? _selectedFace : active.face;
+  }
+
+  String get sceneSignature {
+    final modelPart = _modelSlots
+        .map((slot) => [
+              slot.id,
+              slot.model.id,
+              slot.motion?.id ?? '',
+              slot.face?.id ?? '',
+            ].join('@'))
+        .join('|');
+    return [
+      modelPart,
+      _selectedCamera?.id,
+      _selectedAudio?.id,
+    ].join(':');
+  }
 
   List<DanceAssetPackage> get dancePackages {
     final grouped = <String, List<LibraryAsset>>{};
@@ -113,11 +146,23 @@ class ResourceLibraryController extends ChangeNotifier {
     try {
       await _bridge.deleteAsset(asset);
       _assets = _assets.where((item) => item.id != asset.id).toList();
-      if (_selectedModel?.id == asset.id) _selectedModel = null;
+      if (asset.kind == AssetKind.model) {
+        _modelSlots = _modelSlots.where((slot) => slot.model.id != asset.id).toList();
+      } else {
+        _modelSlots = _modelSlots
+            .map(
+              (slot) => slot.copyWith(
+                clearMotion: slot.motion?.id == asset.id,
+                clearFace: slot.face?.id == asset.id,
+              ),
+            )
+            .toList(growable: false);
+      }
       if (_selectedMotion?.id == asset.id) _selectedMotion = null;
       if (_selectedCamera?.id == asset.id) _selectedCamera = null;
       if (_selectedAudio?.id == asset.id) _selectedAudio = null;
       if (_selectedFace?.id == asset.id) _selectedFace = null;
+      _normalizeActiveModel();
       _error = null;
     } on Object catch (error) {
       _error = error.toString();
@@ -165,10 +210,10 @@ class ResourceLibraryController extends ChangeNotifier {
   void select(LibraryAsset asset) {
     switch (asset.kind) {
       case AssetKind.model:
-        _selectedModel = asset;
-        break;
+        toggleModel(asset);
+        return;
       case AssetKind.motion:
-        _selectedMotion = asset;
+        _assignToActiveModel(motion: asset, notify: false);
         break;
       case AssetKind.camera:
         _selectedCamera = asset;
@@ -177,7 +222,7 @@ class ResourceLibraryController extends ChangeNotifier {
         _selectedAudio = asset;
         break;
       case AssetKind.face:
-        _selectedFace = asset;
+        _assignToActiveModel(face: asset, notify: false);
         break;
       case AssetKind.other:
         break;
@@ -186,19 +231,58 @@ class ResourceLibraryController extends ChangeNotifier {
   }
 
   void applyDancePackage(DanceAssetPackage bundle) {
-    _selectedMotion = bundle.motion;
+    _assignToActiveModel(motion: bundle.motion, face: bundle.face, notify: false);
     _selectedAudio = bundle.audio;
-    _selectedFace = bundle.face;
+    notifyListeners();
+  }
+
+  bool isModelApplied(LibraryAsset asset) {
+    return _modelSlots.any((slot) => slot.model.id == asset.id);
+  }
+
+  void setActiveModelSlot(String id) {
+    if (_modelSlots.any((slot) => slot.id == id)) {
+      _activeModelSlotId = id;
+      notifyListeners();
+    }
+  }
+
+  void toggleModel(LibraryAsset asset) {
+    final existing = _modelSlots.where((slot) => slot.model.id == asset.id).toList();
+    if (existing.isNotEmpty) {
+      final removedId = existing.first.id;
+      _modelSlots = _modelSlots.where((slot) => slot.id != removedId).toList(growable: false);
+      if (_activeModelSlotId == removedId) {
+        _activeModelSlotId = _modelSlots.isEmpty ? null : _modelSlots.first.id;
+      }
+    } else {
+      final slot = AppliedModelSlot(
+        id: asset.id,
+        model: asset,
+        motion: _modelSlots.isEmpty ? _selectedMotion : null,
+        face: _modelSlots.isEmpty ? _selectedFace : null,
+      );
+      _modelSlots = [..._modelSlots, slot];
+      _activeModelSlotId = slot.id;
+    }
+    notifyListeners();
+  }
+
+  void updateModelTransform(String id, {double? x, double? y, double? z}) {
+    _modelSlots = _modelSlots
+        .map((slot) => slot.id == id ? slot.copyWith(x: x, y: y, z: z) : slot)
+        .toList(growable: false);
     notifyListeners();
   }
 
   void clearSelection(AssetKind kind) {
     switch (kind) {
       case AssetKind.model:
-        _selectedModel = null;
+        _modelSlots = const [];
+        _activeModelSlotId = null;
         break;
       case AssetKind.motion:
-        _selectedMotion = null;
+        _assignToActiveModel(clearMotion: true, notify: false);
         break;
       case AssetKind.camera:
         _selectedCamera = null;
@@ -207,7 +291,7 @@ class ResourceLibraryController extends ChangeNotifier {
         _selectedAudio = null;
         break;
       case AssetKind.face:
-        _selectedFace = null;
+        _assignToActiveModel(clearFace: true, notify: false);
         break;
       case AssetKind.other:
         break;
@@ -216,7 +300,8 @@ class ResourceLibraryController extends ChangeNotifier {
   }
 
   void clearScene() {
-    _selectedModel = null;
+    _modelSlots = const [];
+    _activeModelSlotId = null;
     _selectedMotion = null;
     _selectedCamera = null;
     _selectedAudio = null;
@@ -226,7 +311,15 @@ class ResourceLibraryController extends ChangeNotifier {
 
   void _replaceAsset(LibraryAsset updated) {
     _assets = _assets.map((asset) => asset.id == updated.id ? updated : asset).toList();
-    if (_selectedModel?.id == updated.id) _selectedModel = updated;
+    _modelSlots = _modelSlots
+        .map(
+          (slot) => slot.copyWith(
+            model: updated.kind == AssetKind.model && slot.model.id == updated.id ? updated : null,
+            motion: updated.kind == AssetKind.motion && slot.motion?.id == updated.id ? updated : null,
+            face: updated.kind == AssetKind.face && slot.face?.id == updated.id ? updated : null,
+          ),
+        )
+        .toList(growable: false);
     if (_selectedMotion?.id == updated.id) _selectedMotion = updated;
     if (_selectedCamera?.id == updated.id) _selectedCamera = updated;
     if (_selectedAudio?.id == updated.id) _selectedAudio = updated;
@@ -234,7 +327,23 @@ class ResourceLibraryController extends ChangeNotifier {
   }
 
   void _restoreSelections() {
-    _selectedModel = _existingSelection(_selectedModel, AssetKind.model);
+    _modelSlots = _modelSlots
+        .map((slot) {
+          final model = _existingSelection(slot.model, AssetKind.model);
+          if (model == null) return null;
+          final motion = _existingSelection(slot.motion, AssetKind.motion);
+          final face = _existingSelection(slot.face, AssetKind.face);
+          return slot.copyWith(
+            model: model,
+            motion: motion,
+            face: face,
+            clearMotion: slot.motion != null && motion == null,
+            clearFace: slot.face != null && face == null,
+          );
+        })
+        .whereType<AppliedModelSlot>()
+        .toList(growable: false);
+    _normalizeActiveModel();
     _selectedMotion = _existingSelection(_selectedMotion, AssetKind.motion);
     _selectedCamera = _existingSelection(_selectedCamera, AssetKind.camera);
     _selectedAudio = _existingSelection(_selectedAudio, AssetKind.audio);
@@ -247,6 +356,47 @@ class ResourceLibraryController extends ChangeNotifier {
         .where((asset) => asset.kind == kind && asset.id == selected.id)
         .cast<LibraryAsset?>()
         .firstWhere((asset) => asset != null, orElse: () => null);
+  }
+
+  void _assignToActiveModel({
+    LibraryAsset? motion,
+    LibraryAsset? face,
+    bool clearMotion = false,
+    bool clearFace = false,
+    bool notify = true,
+  }) {
+    final active = activeModelSlot;
+    if (active == null) {
+      if (motion != null) _selectedMotion = motion;
+      if (face != null) _selectedFace = face;
+      if (clearMotion) _selectedMotion = null;
+      if (clearFace) _selectedFace = null;
+      if (notify) notifyListeners();
+      return;
+    }
+    _modelSlots = _modelSlots
+        .map(
+          (slot) => slot.id == active.id
+              ? slot.copyWith(
+                  motion: motion,
+                  face: face,
+                  clearMotion: clearMotion,
+                  clearFace: clearFace,
+                )
+              : slot,
+        )
+        .toList(growable: false);
+    if (notify) notifyListeners();
+  }
+
+  void _normalizeActiveModel() {
+    if (_modelSlots.isEmpty) {
+      _activeModelSlotId = null;
+      return;
+    }
+    if (!_modelSlots.any((slot) => slot.id == _activeModelSlotId)) {
+      _activeModelSlotId = _modelSlots.first.id;
+    }
   }
 
   void _setBusy(bool value) {

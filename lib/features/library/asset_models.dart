@@ -143,3 +143,46 @@ class DanceAssetPackage {
     return parts.isEmpty ? 'No playable assets' : parts.join(' / ');
   }
 }
+
+class AppliedModelSlot {
+  const AppliedModelSlot({
+    required this.id,
+    required this.model,
+    this.motion,
+    this.face,
+    this.x = 0,
+    this.y = 0,
+    this.z = 0,
+  });
+
+  final String id;
+  final LibraryAsset model;
+  final LibraryAsset? motion;
+  final LibraryAsset? face;
+  final double x;
+  final double y;
+  final double z;
+
+  bool get hasRenderableModel => model.hasRenderableModel;
+
+  AppliedModelSlot copyWith({
+    LibraryAsset? model,
+    LibraryAsset? motion,
+    bool clearMotion = false,
+    LibraryAsset? face,
+    bool clearFace = false,
+    double? x,
+    double? y,
+    double? z,
+  }) {
+    return AppliedModelSlot(
+      id: id,
+      model: model ?? this.model,
+      motion: clearMotion ? null : motion ?? this.motion,
+      face: clearFace ? null : face ?? this.face,
+      x: x ?? this.x,
+      y: y ?? this.y,
+      z: z ?? this.z,
+    );
+  }
+}

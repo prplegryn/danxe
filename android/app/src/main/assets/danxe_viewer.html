@@ -105,6 +105,7 @@
       contactShadow: null,
       helper: null,
       mesh: null,
+      modelInstances: [],
       audio: null,
       listener: null,
       current: 0,
@@ -116,6 +117,7 @@
       cameraMotion: false,
       manualCamera: { yaw: 18, pitch: -8, distance: 5.4 },
       modelUrl: null,
+      sceneSignature: '',
       physicsReady: false,
       physicsEnabled: false,
       physicsWarningShown: false,
@@ -336,6 +338,13 @@
       return Math.max(min, Math.min(max, value));
     }
 
+    function activeMeshes() {
+      if (Array.isArray(state.modelInstances) && state.modelInstances.length > 0) {
+        return state.modelInstances.map((item) => item.mesh).filter(Boolean);
+      }
+      return state.mesh ? [state.mesh] : [];
+    }
+
     function applyLook() {
       const raw = state.look || defaultLook;
       const enabled = raw.enabled !== false;
@@ -358,8 +367,8 @@
         state.rimLight.intensity = look.rim;
       }
       applyViewOptions();
-      if (state.mesh) {
-        state.mesh.traverse((child) => {
+      for (const mesh of activeMeshes()) {
+        mesh.traverse((child) => {
           const materials = Array.isArray(child.material) ? child.material : [child.material];
           for (const material of materials) {
             applyMaterialLook(material, look, enabled);
@@ -591,15 +600,16 @@ vec3 danxeApplyLook(vec3 color) {
 
     function resetScene() {
       if (!state.scene) return;
-      if (state.mesh) {
-        state.scene.remove(state.mesh);
-        disposeObject(state.mesh);
+      for (const mesh of activeMeshes()) {
+        state.scene.remove(mesh);
+        disposeObject(mesh);
       }
       if (state.audio) {
         try { state.audio.stop(); } catch (_) {}
       }
       state.helper = createAnimationHelper();
       state.mesh = null;
+      state.modelInstances = [];
       state.parts = [];
       state.audio = null;
       state.current = 0;
@@ -607,6 +617,7 @@ vec3 danxeApplyLook(vec3 color) {
       state.playing = false;
       state.loaded = false;
       state.cameraMotion = false;
+      state.sceneSignature = '';
       state.physicsEnabled = false;
       state.physicsWarningShown = false;
       if (state.controls) state.controls.enabled = true;
@@ -683,14 +694,24 @@ vec3 danxeApplyLook(vec3 color) {
           material.needsUpdate = true;
         }
       });
-      updateGroundingForModel(mesh);
-      configureShadowForModel(mesh);
+      updateGroundingForModels();
+      configureShadowForModels();
     }
 
-    function updateGroundingForModel(mesh) {
-      if (!state.contactShadow || !mesh) return;
-      const box = new THREE.Box3().setFromObject(mesh);
-      if (box.isEmpty()) {
+    function sceneModelBounds() {
+      const meshes = activeMeshes();
+      if (meshes.length === 0) return null;
+      const box = new THREE.Box3();
+      for (const mesh of meshes) {
+        box.expandByObject(mesh);
+      }
+      return box.isEmpty() ? null : box;
+    }
+
+    function updateGroundingForModels() {
+      if (!state.contactShadow) return;
+      const box = sceneModelBounds();
+      if (!box) {
         state.contactShadow.visible = false;
         return;
       }
@@ -702,10 +723,10 @@ vec3 danxeApplyLook(vec3 color) {
       state.contactShadow.visible = true;
     }
 
-    function configureShadowForModel(mesh) {
-      if (!state.keyLight || !state.keyLight.shadow || !mesh) return;
-      const box = new THREE.Box3().setFromObject(mesh);
-      if (box.isEmpty()) return;
+    function configureShadowForModels() {
+      if (!state.keyLight || !state.keyLight.shadow) return;
+      const box = sceneModelBounds();
+      if (!box) return;
       const size = box.getSize(new THREE.Vector3());
       const center = box.getCenter(new THREE.Vector3());
       const radius = Math.max(size.x, size.y, size.z, 8);
@@ -732,42 +753,45 @@ vec3 danxeApplyLook(vec3 color) {
     }
 
     function buildModelParts() {
-      if (!state.mesh) return [];
       const parts = [];
-      let counter = 0;
-      state.mesh.traverse((child) => {
-        if (!child.material) return;
-        const materials = Array.isArray(child.material) ? child.material : [child.material];
-        const mmdMaterials = child.geometry &&
-          child.geometry.userData &&
-          child.geometry.userData.MMD &&
-          Array.isArray(child.geometry.userData.MMD.materials)
-          ? child.geometry.userData.MMD.materials
-          : [];
-        materials.forEach((material, index) => {
-          if (!material) return;
-          if (!material.userData) material.userData = {};
-          const id = `mat:${counter++}`;
-          const meta = mmdMaterials[index] || {};
-          const rawName = material.name || meta.name || meta.englishName || meta.nameEn || `Part ${counter}`;
-          material.userData.danxePartId = id;
-          material.userData.danxePartName = String(rawName).trim() || `Part ${counter}`;
-          if (typeof material.visible !== 'boolean') material.visible = true;
-          parts.push({
-            id,
-            name: material.userData.danxePartName,
-            visible: material.visible !== false
+      for (const instance of state.modelInstances || []) {
+        let counter = 0;
+        const prefix = instance.name || 'Model';
+        instance.mesh.traverse((child) => {
+          if (!child.material) return;
+          const materials = Array.isArray(child.material) ? child.material : [child.material];
+          const mmdMaterials = child.geometry &&
+            child.geometry.userData &&
+            child.geometry.userData.MMD &&
+            Array.isArray(child.geometry.userData.MMD.materials)
+            ? child.geometry.userData.MMD.materials
+            : [];
+          materials.forEach((material, index) => {
+            if (!material) return;
+            if (!material.userData) material.userData = {};
+            const id = `${instance.id}:mat:${counter++}`;
+            const meta = mmdMaterials[index] || {};
+            const rawName = material.name || meta.name || meta.englishName || meta.nameEn || `Part ${counter}`;
+            material.userData.danxePartId = id;
+            material.userData.danxePartName = String(rawName).trim() || `Part ${counter}`;
+            if (typeof material.visible !== 'boolean') material.visible = true;
+            parts.push({
+              id,
+              name: `${prefix} / ${material.userData.danxePartName}`,
+              visible: material.visible !== false
+            });
           });
         });
-      });
+      }
       return parts;
     }
 
     function setPartVisibility(payload) {
       const id = payload && payload.id ? String(payload.id) : '';
       const visible = !(payload && payload.visible === false);
-      if (!id || !state.mesh) return;
-      state.mesh.traverse((child) => {
+      if (!id || activeMeshes().length === 0) return;
+      for (const mesh of activeMeshes()) {
+        mesh.traverse((child) => {
         if (!child.material) return;
         const materials = Array.isArray(child.material) ? child.material : [child.material];
         for (const material of materials) {
@@ -776,7 +800,8 @@ vec3 danxeApplyLook(vec3 color) {
             material.needsUpdate = true;
           }
         }
-      });
+        });
+      }
       state.parts = (state.parts || []).map((part) => (
         part.id === id ? { ...part, visible } : part
       ));
@@ -784,41 +809,121 @@ vec3 danxeApplyLook(vec3 color) {
       postStatus();
     }
 
+    function normalizeSceneModels(input) {
+      if (Array.isArray(input.models)) {
+        return input.models
+          .filter((item) => item && item.modelUrl)
+          .map((item, index) => ({
+            id: String(item.id || `model-${index + 1}`),
+            modelUrl: String(item.modelUrl),
+            modelName: item.modelName ? String(item.modelName) : `Model ${index + 1}`,
+            motionUrls: Array.isArray(item.motionUrls) ? item.motionUrls : [],
+            transform: normalizeTransform(item.transform)
+          }));
+      }
+      if (!input.modelUrl) return [];
+      return [{
+        id: 'primary',
+        modelUrl: String(input.modelUrl),
+        modelName: input.modelName ? String(input.modelName) : 'Model',
+        motionUrls: Array.isArray(input.motionUrls) ? input.motionUrls : [],
+        transform: normalizeTransform(input.transform)
+      }];
+    }
+
+    function sceneModelSignature(models) {
+      return models
+        .map((item) => `${item.id}:${item.modelUrl}`)
+        .join('|');
+    }
+
+    function normalizeTransform(payload) {
+      const source = payload && typeof payload === 'object' ? payload : {};
+      return {
+        x: clampNumber(source.x, 0, -50, 50),
+        y: clampNumber(source.y, 0, -20, 80),
+        z: clampNumber(source.z, 0, -50, 50)
+      };
+    }
+
+    function applyModelTransform(instance, transform, refresh = true) {
+      if (!instance || !instance.mesh) return;
+      const next = normalizeTransform(transform);
+      instance.transform = next;
+      instance.mesh.position.set(next.x, next.y, next.z);
+      if (refresh) {
+        updateGroundingForModels();
+        configureShadowForModels();
+        postStatus();
+      }
+    }
+
+    function setModelTransform(payload) {
+      const id = payload && payload.id ? String(payload.id) : '';
+      const instance = (state.modelInstances || []).find((item) => item.id === id);
+      if (!instance) return;
+      applyModelTransform(instance, payload, true);
+    }
+
     async function loadScene(input) {
       initRenderer();
-      const preserveCamera = state.loaded && state.modelUrl === input.modelUrl;
+      const modelInputs = normalizeSceneModels(input || {});
+      const nextSignature = sceneModelSignature(modelInputs);
+      const preserveCamera = state.loaded && state.sceneSignature === nextSignature;
       const cameraSnapshot = preserveCamera ? snapshotCamera() : null;
       resetScene();
-      if (!input.modelUrl) {
+      if (modelInputs.length === 0) {
         state.modelUrl = null;
+        state.sceneSignature = '';
         setStatus('No PMX model selected.');
         post({ type: 'loaded', loaded: false, duration: 0 });
         return;
       }
       state.loading = true;
-      setStatus('Loading PMX model...');
+      setStatus(`Loading ${modelInputs.length} PMX model${modelInputs.length === 1 ? '' : 's'}...`);
       post({ type: 'loading', loading: true });
       const loader = new MMDLoader();
       loader.setCrossOrigin('anonymous');
 
       try {
         const physicsReady = await ensurePhysicsReady();
-        const motionUrls = Array.isArray(input.motionUrls) ? input.motionUrls : [];
         const cameraUrls = Array.isArray(input.cameraUrls) ? input.cameraUrls : [];
-        const mmd = await loadModelAndMotion(loader, input.modelUrl, motionUrls);
-        state.mesh = mmd.mesh;
-        state.mesh.frustumCulled = false;
-        sanitizeMmdMetadata(state.mesh);
-        state.scene.add(state.mesh);
-        enhanceModelRender(state.mesh);
+        const loadedModels = [];
+
+        for (const modelInput of modelInputs) {
+          const motionUrls = Array.isArray(modelInput.motionUrls) ? modelInput.motionUrls : [];
+          const mmd = await loadModelAndMotion(loader, modelInput.modelUrl, motionUrls);
+          const mesh = mmd.mesh;
+          mesh.frustumCulled = false;
+          sanitizeMmdMetadata(mesh);
+          const instance = {
+            id: modelInput.id,
+            name: modelInput.modelName || modelInput.name || 'Model',
+            mesh,
+            animation: mmd.animation,
+            transform: normalizeTransform(modelInput.transform)
+          };
+          state.modelInstances.push(instance);
+          if (!state.mesh) state.mesh = mesh;
+          state.scene.add(mesh);
+          applyModelTransform(instance, instance.transform, false);
+          enhanceModelRender(mesh);
+          loadedModels.push(instance);
+        }
+
         publishModelParts();
+        updateGroundingForModels();
+        configureShadowForModels();
         applyLook();
-        const helperState = addMeshToHelper(state.mesh, mmd.animation, physicsReady);
+        const helperState = addMeshesToHelper(loadedModels, physicsReady);
         state.physicsEnabled = helperState.physics;
         if (helperState.animation !== false) {
-          state.duration = Math.max(state.duration, animationDuration(mmd.animation));
+          for (const item of loadedModels) {
+            state.duration = Math.max(state.duration, animationDuration(item.animation));
+          }
         }
-        state.modelUrl = input.modelUrl;
+        state.modelUrl = modelInputs[0].modelUrl;
+        state.sceneSignature = nextSignature;
 
         if (cameraUrls.length > 0) {
           const cameraAnimation = await loadCameraAnimation(loader, cameraUrls);
@@ -831,7 +936,7 @@ vec3 danxeApplyLook(vec3 color) {
           if (cameraSnapshot) {
             restoreCamera(cameraSnapshot);
           } else {
-            frameModel(state.mesh);
+            frameModels();
           }
         }
 
@@ -927,7 +1032,7 @@ vec3 danxeApplyLook(vec3 color) {
       }
     }
 
-    function addMeshToHelper(mesh, animation, physicsReady) {
+    function addMeshesToHelper(items, physicsReady) {
       const plans = [
         { physics: physicsReady, grant: true, ik: true, pmxAnimation: false, label: 'standard MMD animation with physics' },
         { physics: physicsReady, grant: true, ik: true, pmxAnimation: true, label: 'PMX ordered animation with physics' },
@@ -948,13 +1053,21 @@ vec3 danxeApplyLook(vec3 color) {
       let firstError = null;
       for (const plan of plans) {
         try {
-          state.helper = buildAnimationHelper(plan);
-          state.helper.add(mesh, plan.physics ? { animation, ...physicsParams } : { animation, physics: false });
-          state.helper.enable('physics', plan.physics);
-          state.helper.enable('grant', plan.grant);
-          state.helper.enable('ik', plan.ik);
-          state.helper.update(0);
-          postPhysicsStatus(mesh, physicsReady, plan, firstError);
+          const helper = buildAnimationHelper(plan);
+          for (const item of items) {
+            helper.add(
+              item.mesh,
+              plan.physics ? { animation: item.animation, ...physicsParams } : { animation: item.animation, physics: false }
+            );
+          }
+          helper.enable('physics', plan.physics);
+          helper.enable('grant', plan.grant);
+          helper.enable('ik', plan.ik);
+          helper.update(0);
+          state.helper = helper;
+          for (const item of items) {
+            postPhysicsStatus(item.mesh, physicsReady, plan, firstError, item.name);
+          }
           postHelperMode(plan, firstError);
           return { ...plan, animation: true };
         } catch (error) {
@@ -968,16 +1081,19 @@ vec3 danxeApplyLook(vec3 color) {
         ik: false,
         pmxAnimation: false
       });
-      state.helper.add(mesh, { physics: false });
-      postPhysicsStatus(
-        mesh,
-        physicsReady,
-        { physics: false, grant: false, ik: false, pmxAnimation: false, label: 'basic skeletal animation' },
-        firstError
-      );
+      for (const item of items) {
+        state.helper.add(item.mesh, { physics: false });
+        postPhysicsStatus(
+          item.mesh,
+          physicsReady,
+          { physics: false, grant: false, ik: false, pmxAnimation: false, label: 'basic skeletal animation' },
+          firstError,
+          item.name
+        );
+      }
       post({
         type: 'message',
-        message: `Motion skipped for this model: ${errorMessage(firstError)}`,
+        message: `Motion skipped for one or more models: ${errorMessage(firstError)}`,
         hidden: true
       });
       return { physics: false, grant: false, ik: false, pmxAnimation: false, animation: false };
@@ -998,10 +1114,11 @@ vec3 danxeApplyLook(vec3 color) {
       });
     }
 
-    function postPhysicsStatus(mesh, physicsReady, plan, firstError) {
+    function postPhysicsStatus(mesh, physicsReady, plan, firstError, modelName = '') {
       const stats = mmdPhysicsStats(mesh);
       const reason = physicsInactiveReason(stats, physicsReady, plan, firstError);
       const gravity = physicsParams.gravity;
+      const prefix = modelName ? `${modelName}: ` : '';
       const details = [
         `runtime=${physicsReady ? 'ready' : 'unavailable'}`,
         `enabled=${plan.physics ? 'yes' : 'no'}`,
@@ -1018,7 +1135,7 @@ vec3 danxeApplyLook(vec3 color) {
       ];
       post({
         type: 'message',
-        message: `MMD physics: ${details.join(', ')}${reason ? `; ${reason}` : ''}.`,
+        message: `MMD physics: ${prefix}${details.join(', ')}${reason ? `; ${reason}` : ''}.`,
         hidden: true
       });
     }
@@ -1102,8 +1219,9 @@ vec3 danxeApplyLook(vec3 color) {
       return animation.duration || 0;
     }
 
-    function frameModel(mesh) {
-      const box = new THREE.Box3().setFromObject(mesh);
+    function frameModels() {
+      const box = sceneModelBounds();
+      if (!box) return;
       const size = box.getSize(new THREE.Vector3());
       const center = box.getCenter(new THREE.Vector3());
       state.controls.target.copy(center);
@@ -1233,8 +1351,8 @@ vec3 danxeApplyLook(vec3 color) {
 
       let distance = state.manualCamera.distance;
       let target = state.controls ? state.controls.target.clone() : new THREE.Vector3();
-      if (state.mesh && state.controls) {
-        const box = new THREE.Box3().setFromObject(state.mesh);
+      const box = sceneModelBounds();
+      if (box && state.controls) {
         const size = box.getSize(new THREE.Vector3());
         const center = box.getCenter(new THREE.Vector3());
         const height = Math.max(size.y, 1);
@@ -1579,6 +1697,7 @@ vec3 danxeApplyLook(vec3 color) {
       setLook,
       setView,
       setPartVisibility,
+      setModelTransform,
       exportVideo
     };
     initRenderer();
