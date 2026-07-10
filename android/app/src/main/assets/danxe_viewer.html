@@ -1203,7 +1203,7 @@ vec3 danxeApplyLook(vec3 color) {
         const retry = await createSanitizedPmxUrl(modelUrl, error);
         if (!retry) throw error;
         try {
-          return await loadModelAndMotionDirect(loader, retry.url, motionUrls);
+          return await loadModelAndMotionDirect(loader, retry.url, motionUrls, retry.extension);
         } catch (retryError) {
           throw new Error(`PMX compatibility retry failed: ${errorMessage(retryError)}`);
         } finally {
@@ -1212,12 +1212,22 @@ vec3 danxeApplyLook(vec3 color) {
       }
     }
 
-    function loadModelAndMotionDirect(loader, modelUrl, motionUrls) {
+    function loadModelAndMotionDirect(loader, modelUrl, motionUrls, forcedExtension = null) {
       return new Promise((resolve, reject) => {
-        if (motionUrls.length > 0) {
-          loader.loadWithAnimation(modelUrl, motionUrls, resolve, undefined, reject);
-        } else {
-          loader.load(modelUrl, (mesh) => resolve({ mesh, animation: undefined }), undefined, reject);
+        const originalExtractExtension = loader._extractExtension;
+        if (forcedExtension) {
+          loader._extractExtension = (url) => (
+            url === modelUrl ? forcedExtension : originalExtractExtension.call(loader, url)
+          );
+        }
+        try {
+          if (motionUrls.length > 0) {
+            loader.loadWithAnimation(modelUrl, motionUrls, resolve, undefined, reject);
+          } else {
+            loader.load(modelUrl, (mesh) => resolve({ mesh, animation: undefined }), undefined, reject);
+          }
+        } finally {
+          if (forcedExtension) loader._extractExtension = originalExtractExtension;
         }
       });
     }
@@ -1236,7 +1246,7 @@ vec3 danxeApplyLook(vec3 color) {
           message: `PMX compatibility retry: ${fixes}; original error: ${errorMessage(originalError)}.`,
           hidden: true
         });
-        return { url };
+        return { url, extension: 'pmx' };
       } catch (error) {
         post({
           type: 'message',
