@@ -57,21 +57,22 @@
     const statusEl = document.getElementById('status');
     const clock = new THREE.Clock();
     const environmentColor = 0xffffff;
+    const hemisphereGroundColor = 0x283044;
     const defaultLook = Object.freeze({
       preset: 'balanced',
       enabled: true,
-      exposure: 1.03,
-      contrast: 1.26,
-      saturation: 1.36,
-      brightness: 1.03,
-      dehaze: 0.11,
-      ambient: 1.16,
-      key: 1.72,
-      rim: 0.52,
-      specular: 0.56,
-      shininess: 34,
-      toon: 1.16,
-      texture: 1.30,
+      exposure: 0.98,
+      contrast: 1.18,
+      saturation: 1.20,
+      brightness: 1.0,
+      dehaze: 0.07,
+      ambient: 0.92,
+      key: 1.34,
+      rim: 0.24,
+      specular: 0.48,
+      shininess: 32,
+      toon: 1.0,
+      texture: 1.16,
       floor: true
     });
     const neutralLook = Object.freeze({
@@ -82,8 +83,8 @@
       saturation: 1.0,
       brightness: 1.0,
       dehaze: 0.0,
-      ambient: 2.0,
-      key: 2.1,
+      ambient: 1.05,
+      key: 1.45,
       rim: 0.0,
       specular: 1.0,
       shininess: 30,
@@ -236,7 +237,11 @@
       state.controls.enableDamping = true;
       state.controls.target.set(0, 10, 0);
 
-      state.hemiLight = new THREE.HemisphereLight(environmentColor, environmentColor, defaultLook.ambient);
+      state.hemiLight = new THREE.HemisphereLight(
+        environmentColor,
+        hemisphereGroundColor,
+        defaultLook.ambient
+      );
       state.scene.add(state.hemiLight);
       state.keyLightTarget = new THREE.Object3D();
       state.keyLightTarget.position.set(0, 8, 0);
@@ -363,7 +368,7 @@
         state.scene.background = new THREE.Color(environmentColor);
       }
       if (state.renderer) {
-        state.renderer.toneMapping = enabled ? THREE.LinearToneMapping : THREE.NoToneMapping;
+        state.renderer.toneMapping = THREE.LinearToneMapping;
         state.renderer.toneMappingExposure = look.exposure;
       }
       if (state.hemiLight) {

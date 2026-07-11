@@ -51,72 +51,72 @@ class _LookSettings {
   static const balanced = _LookSettings(
     preset: 'balanced',
     enabled: true,
-    exposure: 1.03,
-    contrast: 1.26,
-    saturation: 1.36,
-    brightness: 1.03,
-    dehaze: 0.11,
-    ambient: 1.16,
-    key: 1.72,
-    rim: 0.52,
-    specular: 0.56,
-    shininess: 34,
-    toon: 1.16,
-    texture: 1.30,
+    exposure: 0.98,
+    contrast: 1.18,
+    saturation: 1.20,
+    brightness: 1.0,
+    dehaze: 0.07,
+    ambient: 0.92,
+    key: 1.34,
+    rim: 0.24,
+    specular: 0.48,
+    shininess: 32,
+    toon: 1.0,
+    texture: 1.16,
     floor: true,
   );
 
   static const clear = _LookSettings(
     preset: 'clear',
     enabled: true,
-    exposure: 1.04,
-    contrast: 1.30,
-    saturation: 1.30,
-    brightness: 1.06,
-    dehaze: 0.12,
-    ambient: 1.22,
-    key: 1.78,
-    rim: 0.42,
-    specular: 0.46,
+    exposure: 1.0,
+    contrast: 1.22,
+    saturation: 1.14,
+    brightness: 1.02,
+    dehaze: 0.08,
+    ambient: 0.98,
+    key: 1.42,
+    rim: 0.20,
+    specular: 0.44,
     shininess: 30,
-    toon: 1.08,
-    texture: 1.30,
+    toon: 1.0,
+    texture: 1.18,
     floor: true,
   );
 
   static const vivid = _LookSettings(
     preset: 'vivid',
     enabled: true,
-    exposure: 1.05,
-    contrast: 1.42,
-    saturation: 1.74,
-    brightness: 1.04,
-    dehaze: 0.17,
-    ambient: 1.02,
-    key: 1.92,
-    rim: 0.70,
-    specular: 0.68,
-    shininess: 44,
-    toon: 1.28,
-    texture: 1.58,
+    exposure: 1.0,
+    contrast: 1.34,
+    saturation: 1.52,
+    brightness: 1.0,
+    dehaze: 0.13,
+    ambient: 0.84,
+    key: 1.48,
+    rim: 0.34,
+    specular: 0.58,
+    shininess: 40,
+    toon: 1.06,
+    texture: 1.38,
     floor: true,
   );
 
   static const stage = _LookSettings(
     preset: 'stage',
     enabled: true,
-    exposure: 1.08,
-    contrast: 1.36,
-    saturation: 1.46,
-    brightness: 1.02,
-    dehaze: 0.15,
-    ambient: 0.88,
-    key: 2.25,
-    rim: 1.08,
-    specular: 0.80,
-    shininess: 54,
-    toon: 1.18,
-    texture: 1.40,
+    exposure: 1.02,
+    contrast: 1.30,
+    saturation: 1.30,
+    brightness: 1.0,
+    dehaze: 0.11,
+    ambient: 0.70,
+    key: 1.68,
+    rim: 0.62,
+    specular: 0.68,
+    shininess: 46,
+    toon: 1.04,
+    texture: 1.26,
     floor: true,
   );
 
@@ -203,6 +203,17 @@ class PlayerScreen extends StatefulWidget {
   State<PlayerScreen> createState() => _PlayerScreenState();
 }
 
+enum _FloatingPanelKind {
+  scene,
+  library,
+  camera,
+  view,
+  look,
+  placement,
+  export,
+  logs,
+}
+
 class _PlayerScreenState extends State<PlayerScreen> {
   late final HostBridge _bridge;
   late final ResourceLibraryController _library;
@@ -216,6 +227,13 @@ class _PlayerScreenState extends State<PlayerScreen> {
   bool _floorVisible = false;
   _LookSettings _look = _LookSettings.balanced;
   List<ViewerPart> _modelParts = const [];
+  _FloatingPanelKind? _activePanel;
+  AssetKind _libraryKind = AssetKind.model;
+  String _libraryQuery = '';
+  LibraryAsset? _libraryDetail;
+  String _assetDraftName = '';
+  String? _pendingDeleteAssetId;
+  ExportSettings _exportSettings = const ExportSettings();
   String? _lastSceneSignature;
   String? _lastLibraryError;
 
@@ -345,16 +363,68 @@ class _PlayerScreenState extends State<PlayerScreen> {
   @override
   Widget build(BuildContext context) {
     return AnimatedBuilder(
-      animation: Listenable.merge([_library, _player]),
+      animation: Listenable.merge([_library, _player, _logs]),
       builder: (context, _) {
         return Scaffold(
+          resizeToAvoidBottomInset: false,
           body: LayoutBuilder(
             builder: (context, constraints) {
               final safe = MediaQuery.paddingOf(context);
-              final compact = constraints.maxWidth < 560;
-              final short = constraints.maxHeight < 560;
-              final side = compact ? 10.0 : 18.0;
-              final bottom = safe.bottom + (short ? 8 : 12);
+              final keyboard = MediaQuery.viewInsetsOf(context).bottom;
+              final landscape = constraints.maxWidth >= 640 &&
+                  constraints.maxWidth > constraints.maxHeight;
+              final edge = landscape ? 10.0 : 12.0;
+              final safeContentWidth = constraints.maxWidth - safe.left - safe.right;
+              final portraitPanelWidth = constraints.maxWidth -
+                  safe.left -
+                  safe.right -
+                  edge -
+                  68;
+              final panelWidth = landscape
+                  ? (safeContentWidth * 0.38).clamp(268.0, 300.0).toDouble()
+                  : (portraitPanelWidth > 320 ? 320.0 : portraitPanelWidth);
+              final portraitAvailableHeight = constraints.maxHeight -
+                  safe.top -
+                  safe.bottom -
+                  keyboard -
+                  156;
+              final desiredPortraitPanelHeight = switch (_activePanel) {
+                _FloatingPanelKind.camera => 330.0,
+                _FloatingPanelKind.view => 360.0,
+                _FloatingPanelKind.logs => 330.0,
+                _FloatingPanelKind.export => 390.0,
+                _ => 400.0,
+              };
+              final portraitPanelHeight =
+                  portraitAvailableHeight < desiredPortraitPanelHeight
+                      ? portraitAvailableHeight
+                      : desiredPortraitPanelHeight;
+              final landscapePanelHeight = constraints.maxHeight -
+                  safe.top -
+                  safe.bottom -
+                  70;
+              final panelHeight = landscape
+                  ? landscapePanelHeight
+                  : portraitPanelHeight;
+              final landscapeTransportSpace = safeContentWidth - panelWidth - 40;
+              final transportWidth = landscape
+                  ? (landscapeTransportSpace > 450
+                      ? 450.0
+                      : landscapeTransportSpace)
+                  : safeContentWidth - edge * 2;
+              final landscapeStatusSpace = safeContentWidth - 342;
+              final statusWidth = landscape
+                  ? landscapeStatusSpace.clamp(140.0, 250.0).toDouble()
+                  : (safeContentWidth - edge > 276
+                      ? 276.0
+                      : safeContentWidth - edge);
+              final verticalRailSpace = constraints.maxHeight -
+                  safe.top -
+                  safe.bottom -
+                  140;
+              final verticalRailExtent = verticalRailSpace > 312
+                  ? 312.0
+                  : verticalRailSpace;
 
               return Stack(
                 children: [
@@ -367,41 +437,61 @@ class _PlayerScreenState extends State<PlayerScreen> {
                     )
                   else ...[
                     Positioned(
-                      top: safe.top + (short ? 8 : 12),
-                      left: safe.left + side,
-                      right: safe.right + side,
-                      child: _SceneStatusBar(
+                      top: safe.top + (landscape ? 9 : 12),
+                      left: safe.left + edge,
+                      child: _FloatingSceneChip(
                         models: _library.modelSlots,
                         activeModel: _library.activeModelSlot,
                         player: _player,
                         busy: _library.busy,
-                        onOpenScene: _showApplySheet,
-                      ),
-                    ),
-                    Positioned(
-                      left: safe.left + side,
-                      right: safe.right + side,
-                      bottom: bottom,
-                      child: _WorkspacePanel(
-                        compact: compact,
-                        player: _player,
-                        exporting: _exporting,
-                        canExport: _library.modelSlots.any((slot) => slot.hasRenderableModel),
-                        hasModels: _library.modelSlots.isNotEmpty,
-                        onTogglePlayback: _togglePlayback,
-                        onSeek: _seek,
-                        onSpeed: _setSpeed,
-                        onExport: _showExportSheet,
-                        onScene: _showApplySheet,
-                        onLibrary: _showLibraryManager,
-                        onCamera: _showCameraSheet,
-                        onView: _showViewSheet,
-                        onLook: _showLookSheet,
-                        onEdit: _showModelPlacementSheet,
-                        onLog: _showLogSheet,
+                        maxWidth: statusWidth,
+                        onPressed: () => _toggleFloatingPanel(_FloatingPanelKind.scene),
                         onHide: _hideUi,
                       ),
                     ),
+                    if (_activePanel != null && panelWidth > 0 && panelHeight > 0)
+                      Positioned(
+                        key: ValueKey(_activePanel),
+                        left: landscape ? null : safe.left + edge,
+                        right: landscape ? safe.right + edge : null,
+                        top: landscape ? safe.top + 60 : null,
+                        bottom: landscape
+                            ? safe.bottom + 10
+                            : safe.bottom + keyboard + 76,
+                        width: panelWidth,
+                        height: panelHeight,
+                        child: _FloatingInspector(
+                          kind: _activePanel!,
+                          onClose: _closeFloatingPanel,
+                          child: _buildFloatingPanel(_activePanel!),
+                        ),
+                      ),
+                    if (transportWidth > 0)
+                      Positioned(
+                        left: safe.left + edge,
+                        bottom: safe.bottom + 10,
+                        width: transportWidth,
+                        child: _FloatingTransportBar(
+                          player: _player,
+                          exporting: _exporting,
+                          onToggle: _togglePlayback,
+                          onSeek: _seek,
+                          onSpeed: _setSpeed,
+                        ),
+                      ),
+                    if (landscape || verticalRailExtent >= 40)
+                      Positioned(
+                        top: landscape ? safe.top + 9 : safe.top + 68,
+                        right: safe.right + edge,
+                        child: _FloatingToolRail(
+                          horizontal: landscape,
+                          maxExtent: landscape ? null : verticalRailExtent,
+                          active: _activePanel,
+                          hasModels: _library.modelSlots.isNotEmpty,
+                          canExport: _library.modelSlots.any((slot) => slot.hasRenderableModel),
+                          onSelected: _toggleFloatingPanel,
+                        ),
+                      ),
                   ],
                 ],
               );
@@ -409,6 +499,867 @@ class _PlayerScreenState extends State<PlayerScreen> {
           ),
         );
       },
+    );
+  }
+
+  void _toggleFloatingPanel(_FloatingPanelKind kind) {
+    if (kind == _FloatingPanelKind.placement && _library.modelSlots.isEmpty) {
+      _showMessage('Apply a model before editing placement.');
+      return;
+    }
+    if (kind == _FloatingPanelKind.export &&
+        !_library.modelSlots.any((slot) => slot.hasRenderableModel)) {
+      _showMessage('Apply a renderable model before exporting.');
+      return;
+    }
+    setState(() {
+      if (_activePanel == kind) {
+        _activePanel = null;
+        return;
+      }
+      _activePanel = kind;
+      _pendingDeleteAssetId = null;
+      if (kind == _FloatingPanelKind.export) {
+        _exportSettings = ExportSettings(
+          durationSeconds: _player.duration > 0
+              ? _player.duration.round().clamp(1, 600).toInt()
+              : 10,
+        );
+      }
+    });
+  }
+
+  void _closeFloatingPanel() {
+    setState(() {
+      _activePanel = null;
+      _libraryDetail = null;
+      _pendingDeleteAssetId = null;
+    });
+  }
+
+  void _openLibraryPanel(AssetKind kind) {
+    setState(() {
+      _activePanel = _FloatingPanelKind.library;
+      _libraryKind = kind;
+      _libraryQuery = '';
+      _libraryDetail = null;
+      _pendingDeleteAssetId = null;
+    });
+  }
+
+  void _openLibraryDetail(LibraryAsset asset) {
+    setState(() {
+      _libraryDetail = asset;
+      _assetDraftName = asset.name;
+      _pendingDeleteAssetId = null;
+    });
+  }
+
+  Widget _buildFloatingPanel(_FloatingPanelKind kind) {
+    return switch (kind) {
+      _FloatingPanelKind.scene => _buildScenePanel(),
+      _FloatingPanelKind.library => _buildLibraryPanel(),
+      _FloatingPanelKind.camera => _buildCameraPanel(),
+      _FloatingPanelKind.view => _buildViewPanel(),
+      _FloatingPanelKind.look => _buildLookPanel(),
+      _FloatingPanelKind.placement => _buildPlacementPanel(),
+      _FloatingPanelKind.export => _buildExportPanel(),
+      _FloatingPanelKind.logs => _buildLogsPanel(),
+    };
+  }
+
+  Widget _buildScenePanel() {
+    final models = _library.modelSlots;
+    final active = _library.activeModelSlot;
+    final packages = _library.dancePackages;
+    final modelValue = models.isEmpty
+        ? 'Not selected'
+        : models.map((slot) => slot.model.name).join(', ');
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(12, 8, 12, 14),
+      keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+      children: [
+        if (models.length > 1) ...[
+          const _InspectorSectionLabel('Target model'),
+          const SizedBox(height: 7),
+          _ModelEditTabs(
+            slots: models,
+            activeId: active?.id,
+            onSelected: _library.setActiveModelSlot,
+          ),
+          const SizedBox(height: 10),
+        ],
+        _InspectorBindingRow(
+          icon: _iconForKind(AssetKind.model),
+          label: 'Models',
+          value: modelValue,
+          active: models.isNotEmpty,
+          onPressed: () => _openLibraryPanel(AssetKind.model),
+          onClear: models.isEmpty
+              ? null
+              : () => _library.clearSelection(AssetKind.model),
+        ),
+        _InspectorBindingRow(
+          icon: _iconForKind(AssetKind.motion),
+          label: 'Motion',
+          value: _library.selectedMotion?.name ?? 'Not selected',
+          active: _library.selectedMotion != null,
+          onPressed: () => _openLibraryPanel(AssetKind.motion),
+          onClear: _library.selectedMotion == null
+              ? null
+              : () => _library.clearSelection(AssetKind.motion),
+        ),
+        _InspectorBindingRow(
+          icon: _iconForKind(AssetKind.face),
+          label: 'Face',
+          value: _library.selectedFace?.name ?? 'Not selected',
+          active: _library.selectedFace != null,
+          onPressed: () => _openLibraryPanel(AssetKind.face),
+          onClear: _library.selectedFace == null
+              ? null
+              : () => _library.clearSelection(AssetKind.face),
+        ),
+        _InspectorBindingRow(
+          icon: _iconForKind(AssetKind.camera),
+          label: 'Camera',
+          value: _library.selectedCamera?.name ?? 'Manual camera',
+          active: _library.selectedCamera != null,
+          onPressed: () => _openLibraryPanel(AssetKind.camera),
+          onClear: _library.selectedCamera == null
+              ? null
+              : () => _library.clearSelection(AssetKind.camera),
+        ),
+        _InspectorBindingRow(
+          icon: _iconForKind(AssetKind.audio),
+          label: 'Audio',
+          value: _library.selectedAudio?.name ?? 'No audio',
+          active: _library.selectedAudio != null,
+          onPressed: () => _openLibraryPanel(AssetKind.audio),
+          onClear: _library.selectedAudio == null
+              ? null
+              : () => _library.clearSelection(AssetKind.audio),
+        ),
+        if (packages.isNotEmpty) ...[
+          const SizedBox(height: 8),
+          const _InspectorSectionLabel('Dance packages'),
+          const SizedBox(height: 7),
+          for (final bundle in packages)
+            _InspectorPackageRow(
+              bundle: bundle,
+              onPressed: () {
+                _library.applyDancePackage(bundle);
+                _logs.info('apply', 'Applied dance package ${bundle.name}.');
+              },
+            ),
+        ],
+        const SizedBox(height: 10),
+        TextButton.icon(
+          onPressed: models.isEmpty &&
+                  _library.selectedMotion == null &&
+                  _library.selectedCamera == null &&
+                  _library.selectedAudio == null &&
+                  _library.selectedFace == null
+              ? null
+              : () {
+                  _library.clearScene();
+                  _logs.info('apply', 'Scene bindings cleared.');
+                },
+          icon: const Icon(Icons.layers_clear_outlined, size: 18),
+          label: const Text('Clear scene'),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildLibraryPanel() {
+    final detail = _currentLibraryDetail();
+    if (_libraryDetail != null) {
+      return _buildLibraryDetailPanel(detail);
+    }
+    final normalizedQuery = _libraryQuery.trim().toLowerCase();
+    final assets = _library.byKind(_libraryKind).where((asset) {
+      if (normalizedQuery.isEmpty) return true;
+      return asset.name.toLowerCase().contains(normalizedQuery) ||
+          asset.sourceName.toLowerCase().contains(normalizedQuery) ||
+          _assetCapability(asset).toLowerCase().contains(normalizedQuery);
+    }).toList(growable: false);
+    const kinds = [
+      AssetKind.model,
+      AssetKind.motion,
+      AssetKind.camera,
+      AssetKind.audio,
+      AssetKind.face,
+    ];
+
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(12, 8, 12, 14),
+      keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+      children: [
+        Row(
+          children: [
+            Expanded(
+              child: Text(
+                '${_library.assets.length} imported resources',
+                style: const TextStyle(color: AppColors.textMuted, fontSize: 11.5),
+              ),
+            ),
+            _TinyActionButton(
+              tooltip: 'Reload library',
+              icon: Icons.refresh_rounded,
+              onPressed: _library.busy ? null : _library.load,
+            ),
+            const SizedBox(width: 5),
+            _TinyActionButton(
+              tooltip: 'Import ${_libraryKind.label.toLowerCase()}',
+              icon: Icons.add_rounded,
+              emphasized: true,
+              onPressed: _library.busy ? null : () => _import(_libraryKind),
+            ),
+          ],
+        ),
+        const SizedBox(height: 9),
+        SizedBox(
+          height: 40,
+          child: ListView.separated(
+            scrollDirection: Axis.horizontal,
+            itemCount: kinds.length,
+            separatorBuilder: (_, __) => const SizedBox(width: 5),
+            itemBuilder: (context, index) {
+              final kind = kinds[index];
+              return _LibraryKindButton(
+                kind: kind,
+                count: _library.byKind(kind).length,
+                selected: kind == _libraryKind,
+                onPressed: () {
+                  setState(() {
+                    _libraryKind = kind;
+                    _libraryQuery = '';
+                    _pendingDeleteAssetId = null;
+                  });
+                },
+              );
+            },
+          ),
+        ),
+        if ((_libraryKind == AssetKind.motion || _libraryKind == AssetKind.face) &&
+            _library.modelSlots.length > 1) ...[
+          const SizedBox(height: 9),
+          _ModelEditTabs(
+            slots: _library.modelSlots,
+            activeId: _library.activeModelSlot?.id,
+            onSelected: _library.setActiveModelSlot,
+          ),
+        ],
+        const SizedBox(height: 9),
+        TextFormField(
+          key: ValueKey(_libraryKind),
+          initialValue: _libraryQuery,
+          onChanged: (value) => setState(() => _libraryQuery = value),
+          decoration: InputDecoration(
+            hintText: 'Search ${_libraryKind.label.toLowerCase()}',
+            prefixIcon: const Icon(Icons.search_rounded, size: 19),
+            isDense: true,
+          ),
+        ),
+        const SizedBox(height: 9),
+        if (assets.isEmpty)
+          _InspectorEmpty(
+            icon: normalizedQuery.isEmpty
+                ? _iconForKind(_libraryKind)
+                : Icons.search_off_rounded,
+            message: normalizedQuery.isEmpty
+                ? 'No ${_libraryKind.label.toLowerCase()} imported yet.'
+                : 'No matching resources.',
+            actionLabel: normalizedQuery.isEmpty ? 'Import' : null,
+            onAction: normalizedQuery.isEmpty ? () => _import(_libraryKind) : null,
+          )
+        else
+          for (final asset in assets)
+            _InspectorAssetRow(
+              asset: asset,
+              selected: _isSelected(asset),
+              onPressed: () => _applyAsset(asset),
+              onDetails: () => _openLibraryDetail(asset),
+            ),
+      ],
+    );
+  }
+
+  LibraryAsset? _currentLibraryDetail() {
+    final current = _libraryDetail;
+    if (current == null) return null;
+    for (final asset in _library.assets) {
+      if (asset.id == current.id) return asset;
+    }
+    return null;
+  }
+
+  Widget _buildLibraryDetailPanel(LibraryAsset? asset) {
+    if (asset == null) {
+      return _InspectorEmpty(
+        icon: Icons.folder_off_outlined,
+        message: 'This resource is no longer in the library.',
+        actionLabel: 'Back',
+        onAction: () => setState(() => _libraryDetail = null),
+      );
+    }
+    final confirmingDelete = _pendingDeleteAssetId == asset.id;
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(12, 6, 12, 14),
+      keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+      children: [
+        Align(
+          alignment: Alignment.centerLeft,
+          child: TextButton.icon(
+            onPressed: () {
+              setState(() {
+                _libraryDetail = null;
+                _pendingDeleteAssetId = null;
+              });
+            },
+            icon: const Icon(Icons.arrow_back_rounded, size: 18),
+            label: const Text('Library'),
+          ),
+        ),
+        const SizedBox(height: 4),
+        _CompactResourceIdentity(asset: asset),
+        const SizedBox(height: 10),
+        TextFormField(
+          key: ValueKey('${asset.id}:${asset.name}'),
+          initialValue: _assetDraftName,
+          onChanged: (value) => _assetDraftName = value,
+          textInputAction: TextInputAction.done,
+          decoration: const InputDecoration(
+            labelText: 'Display name',
+            prefixIcon: Icon(Icons.edit_outlined, size: 19),
+            isDense: true,
+          ),
+        ),
+        const SizedBox(height: 10),
+        _CompactMetadata(asset: asset),
+        const SizedBox(height: 12),
+        FilledButton.icon(
+          onPressed: _library.busy
+              ? null
+              : () async {
+                  final updated = await _library.rename(asset, _assetDraftName);
+                  if (!mounted || updated == null) return;
+                  setState(() {
+                    _libraryDetail = updated;
+                    _assetDraftName = updated.name;
+                  });
+                  _logs.info('library', 'Renamed ${asset.name} to ${updated.name}.');
+                },
+          icon: const Icon(Icons.check_rounded, size: 18),
+          label: const Text('Save name'),
+        ),
+        const SizedBox(height: 7),
+        OutlinedButton.icon(
+          onPressed: _library.busy
+              ? null
+              : () async {
+                  final updated = await _library.rescan(asset);
+                  if (!mounted || updated == null) return;
+                  setState(() {
+                    _libraryDetail = updated;
+                    _assetDraftName = updated.name;
+                  });
+                  _logs.info('library', 'Rescanned ${updated.name}.');
+                },
+          icon: const Icon(Icons.manage_search_rounded, size: 18),
+          label: const Text('Rescan files'),
+        ),
+        const SizedBox(height: 7),
+        OutlinedButton.icon(
+          onPressed: _library.busy
+              ? null
+              : () async {
+                  if (!confirmingDelete) {
+                    setState(() => _pendingDeleteAssetId = asset.id);
+                    return;
+                  }
+                  await _library.delete(asset);
+                  if (!mounted) return;
+                  setState(() {
+                    _libraryDetail = null;
+                    _pendingDeleteAssetId = null;
+                  });
+                  _logs.warning('library', 'Deleted ${asset.name}.');
+                },
+          style: OutlinedButton.styleFrom(
+            foregroundColor: AppColors.danger,
+            side: BorderSide(
+              color: AppColors.danger.withOpacity(confirmingDelete ? 0.92 : 0.48),
+            ),
+          ),
+          icon: Icon(
+            confirmingDelete ? Icons.warning_amber_rounded : Icons.delete_outline_rounded,
+            size: 18,
+          ),
+          label: Text(confirmingDelete ? 'Tap again to delete' : 'Delete resource'),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildCameraPanel() {
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(12, 8, 12, 14),
+      children: [
+        if (_library.selectedCamera != null) ...[
+          const _CompactNotice(
+            icon: Icons.movie_filter_outlined,
+            text: 'A camera motion is active. Manual changes take control immediately.',
+          ),
+          const SizedBox(height: 9),
+        ],
+        Row(
+          children: [
+            Expanded(
+              child: _CompactActionTile(
+                icon: Icons.accessibility_new_rounded,
+                label: 'Full body',
+                onPressed: () => _applyCameraPreset('fullFront'),
+              ),
+            ),
+            const SizedBox(width: 7),
+            Expanded(
+              child: _CompactActionTile(
+                icon: Icons.portrait_rounded,
+                label: 'Half body',
+                onPressed: () => _applyCameraPreset('halfFront'),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 12),
+        Row(
+          children: [
+            const Expanded(child: _InspectorSectionLabel('Manual orbit')),
+            _TinyActionButton(
+              tooltip: 'Reset camera',
+              icon: Icons.center_focus_strong_rounded,
+              onPressed: () {
+                _player.resetCamera();
+                _pushCamera();
+                _logs.info('camera', 'Camera reset.');
+              },
+            ),
+          ],
+        ),
+        const SizedBox(height: 7),
+        _CompactValueSlider(
+          label: 'Yaw',
+          value: _player.yaw,
+          min: -180,
+          max: 180,
+          suffix: '°',
+          onChanged: (value) {
+            _player.orbit(yaw: value);
+            _pushCamera();
+          },
+        ),
+        _CompactValueSlider(
+          label: 'Pitch',
+          value: _player.pitch,
+          min: -80,
+          max: 80,
+          suffix: '°',
+          onChanged: (value) {
+            _player.orbit(pitch: value);
+            _pushCamera();
+          },
+        ),
+        _CompactValueSlider(
+          label: 'Distance',
+          value: _player.distance,
+          min: 1.4,
+          max: 80,
+          onChanged: (value) {
+            _player.orbit(distance: value);
+            _pushCamera();
+          },
+        ),
+      ],
+    );
+  }
+
+  Widget _buildViewPanel() {
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(12, 8, 12, 14),
+      children: [
+        _CompactSwitchRow(
+          icon: Icons.grid_4x4_rounded,
+          label: 'Reference grid',
+          value: _gridVisible,
+          onChanged: (_) => _toggleGrid(),
+        ),
+        _CompactSwitchRow(
+          icon: Icons.crop_square_rounded,
+          label: 'Solid floor',
+          value: _floorVisible,
+          onChanged: (_) => _toggleFloor(),
+        ),
+        const SizedBox(height: 12),
+        _InspectorSectionLabel(
+          _modelParts.isEmpty
+              ? 'Model parts'
+              : 'Model parts · ${_modelParts.length}',
+        ),
+        const SizedBox(height: 7),
+        if (_modelParts.isEmpty)
+          const _CompactNotice(
+            icon: Icons.layers_outlined,
+            text: 'Material visibility appears after a model finishes loading.',
+          )
+        else
+          for (final part in _modelParts)
+            _CompactPartRow(
+              part: part,
+              onChanged: () => _togglePartVisibility(part),
+            ),
+      ],
+    );
+  }
+
+  Widget _buildLookPanel() {
+    void update(_LookSettings next, {bool log = false}) {
+      _setLook(next, log: log);
+    }
+
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(12, 8, 12, 14),
+      children: [
+        _CompactSwitchRow(
+          icon: Icons.tonality_rounded,
+          label: 'Color enhancement',
+          value: _look.enabled,
+          onChanged: (value) => update(_look.copyWith(enabled: value)),
+        ),
+        const SizedBox(height: 11),
+        const _InspectorSectionLabel('Presets'),
+        const SizedBox(height: 7),
+        _CompactPresetRow(
+          selected: _look.preset,
+          onSelected: (preset) {
+            update(_LookSettings.forPreset(preset, _look), log: true);
+          },
+        ),
+        const SizedBox(height: 12),
+        const _InspectorSectionLabel('Image'),
+        const SizedBox(height: 7),
+        _CompactValueSlider(
+          label: 'Exposure',
+          value: _look.exposure,
+          min: 0.70,
+          max: 1.60,
+          precision: 2,
+          onChanged: (value) => update(_look.copyWith(exposure: value)),
+        ),
+        _CompactValueSlider(
+          label: 'Contrast',
+          value: _look.contrast,
+          min: 0.75,
+          max: 2.0,
+          precision: 2,
+          onChanged: (value) => update(_look.copyWith(contrast: value)),
+        ),
+        _CompactValueSlider(
+          label: 'Saturation',
+          value: _look.saturation,
+          min: 0.5,
+          max: 2.5,
+          precision: 2,
+          onChanged: (value) => update(_look.copyWith(saturation: value)),
+        ),
+        _CompactValueSlider(
+          label: 'Dehaze',
+          value: _look.dehaze,
+          min: 0,
+          max: 0.45,
+          precision: 2,
+          onChanged: (value) => update(_look.copyWith(dehaze: value)),
+        ),
+        _CompactValueSlider(
+          label: 'Texture',
+          value: _look.texture,
+          min: 0.5,
+          max: 2.0,
+          precision: 2,
+          onChanged: (value) => update(_look.copyWith(texture: value)),
+        ),
+        const SizedBox(height: 8),
+        const _InspectorSectionLabel('Lighting'),
+        const SizedBox(height: 7),
+        _CompactValueSlider(
+          label: 'Ambient',
+          value: _look.ambient,
+          min: 0.2,
+          max: 2.4,
+          precision: 2,
+          onChanged: (value) => update(_look.copyWith(ambient: value)),
+        ),
+        _CompactValueSlider(
+          label: 'Key light',
+          value: _look.key,
+          min: 0.2,
+          max: 3.2,
+          precision: 2,
+          onChanged: (value) => update(_look.copyWith(key: value)),
+        ),
+        _CompactValueSlider(
+          label: 'Rim light',
+          value: _look.rim,
+          min: 0,
+          max: 1.8,
+          precision: 2,
+          onChanged: (value) => update(_look.copyWith(rim: value)),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildPlacementPanel() {
+    final active = _library.activeModelSlot;
+    if (active == null) {
+      return const _InspectorEmpty(
+        icon: Icons.open_with_rounded,
+        message: 'Apply a model before editing placement.',
+      );
+    }
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(12, 8, 12, 14),
+      children: [
+        if (_library.modelSlots.length > 1) ...[
+          _ModelEditTabs(
+            slots: _library.modelSlots,
+            activeId: active.id,
+            onSelected: _library.setActiveModelSlot,
+          ),
+          const SizedBox(height: 10),
+        ],
+        _CompactNudgeGrid(
+          onMove: (x, y, z) => _moveActiveModel(x: x, y: y, z: z),
+        ),
+        const SizedBox(height: 12),
+        Row(
+          children: [
+            Expanded(
+              child: Text(
+                active.model.name,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700),
+              ),
+            ),
+            TextButton.icon(
+              onPressed: () => _setActiveModelTransform(
+                active.copyWith(x: 0, y: 0, z: 0),
+              ),
+              icon: const Icon(Icons.center_focus_strong_rounded, size: 17),
+              label: const Text('Reset'),
+            ),
+          ],
+        ),
+        _CompactValueSlider(
+          label: 'X',
+          value: active.x,
+          min: -50,
+          max: 50,
+          precision: 1,
+          accent: AppColors.danger,
+          onChanged: (value) => _setActiveModelTransform(active.copyWith(x: value)),
+        ),
+        _CompactValueSlider(
+          label: 'Y',
+          value: active.y,
+          min: -20,
+          max: 80,
+          precision: 1,
+          accent: AppColors.success,
+          onChanged: (value) => _setActiveModelTransform(active.copyWith(y: value)),
+        ),
+        _CompactValueSlider(
+          label: 'Z',
+          value: active.z,
+          min: -50,
+          max: 50,
+          precision: 1,
+          accent: AppColors.accent,
+          onChanged: (value) => _setActiveModelTransform(active.copyWith(z: value)),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildExportPanel() {
+    final screen = _currentScreenExportSize(context);
+    final screenSize = '${screen.width}x${screen.height}';
+    final duration = _player.duration > 0
+        ? _player.duration.round().clamp(1, 600).toInt()
+        : 10;
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(12, 8, 12, 14),
+      children: [
+        const _CompactNotice(
+          icon: Icons.schedule_rounded,
+          text: 'Recording runs in real time. Keep Danxe open until it finishes.',
+        ),
+        const SizedBox(height: 10),
+        _CompactChoiceRow(
+          label: 'Frame',
+          value: '${_exportSettings.width}x${_exportSettings.height}',
+          options: [
+            const _ChoiceValue('1920x1080', '16:9'),
+            const _ChoiceValue('1080x1920', '9:16'),
+            const _ChoiceValue('1280x720', '720p'),
+            _ChoiceValue(screenSize, 'Screen'),
+          ],
+          onSelected: (value) {
+            final size = value.split('x').map(int.parse).toList(growable: false);
+            setState(() {
+              _exportSettings = _exportSettings.copyWith(
+                width: size[0],
+                height: size[1],
+              );
+            });
+          },
+        ),
+        _CompactChoiceRow(
+          label: 'FPS',
+          value: '${_exportSettings.fps}',
+          options: const [
+            _ChoiceValue('30', '30'),
+            _ChoiceValue('60', '60'),
+          ],
+          onSelected: (value) {
+            setState(() {
+              _exportSettings = _exportSettings.copyWith(fps: int.parse(value));
+            });
+          },
+        ),
+        _CompactChoiceRow(
+          label: 'Bitrate',
+          value: '${_exportSettings.videoBitrateMbps}',
+          options: const [
+            _ChoiceValue('12', '12M'),
+            _ChoiceValue('16', '16M'),
+            _ChoiceValue('24', '24M'),
+          ],
+          onSelected: (value) {
+            setState(() {
+              _exportSettings = _exportSettings.copyWith(
+                videoBitrateMbps: int.parse(value),
+              );
+            });
+          },
+        ),
+        _CompactChoiceRow(
+          label: 'Length',
+          value: '${_exportSettings.durationSeconds}',
+          options: [
+            const _ChoiceValue('10', '10s'),
+            const _ChoiceValue('30', '30s'),
+            _ChoiceValue('$duration', 'Full'),
+          ],
+          onSelected: (value) {
+            setState(() {
+              _exportSettings = _exportSettings.copyWith(
+                durationSeconds: int.parse(value),
+              );
+            });
+          },
+        ),
+        const SizedBox(height: 9),
+        FilledButton.icon(
+          onPressed: _exporting ? null : _startFloatingExport,
+          icon: _exporting
+              ? const SizedBox.square(
+                  dimension: 17,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Icon(Icons.movie_creation_outlined, size: 19),
+          label: Text(_exporting ? 'Recording…' : 'Record video'),
+        ),
+      ],
+    );
+  }
+
+  Future<void> _startFloatingExport() async {
+    final models = _library.modelSlots
+        .where((slot) => slot.hasRenderableModel)
+        .toList(growable: false);
+    if (models.isEmpty || _exporting) return;
+    final model = models.first.model;
+    setState(() => _exporting = true);
+    _logs.info(
+      'export',
+      'Started ${_exportSettings.width}x${_exportSettings.height} ${_exportSettings.fps}fps.',
+    );
+    try {
+      final job = await _export.exportVideo(
+        settings: _exportSettings,
+        model: model,
+        motion: _library.selectedMotion,
+        camera: _library.selectedCamera,
+        audio: _library.selectedAudio,
+      );
+      if (!mounted) return;
+      _logs.info('export', 'Video exported to ${job.path}.');
+      _showMessage('Video exported: ${job.path}');
+    } on Object catch (error) {
+      if (mounted) setState(() => _exporting = false);
+      _logs.error('export', error.toString());
+      _showMessage(error.toString());
+    }
+  }
+
+  Widget _buildLogsPanel() {
+    final entries = _logs.entries;
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(12, 7, 8, 5),
+          child: Row(
+            children: [
+              Expanded(
+                child: Text(
+                  '${entries.length} recent events',
+                  style: const TextStyle(color: AppColors.textMuted, fontSize: 11.5),
+                ),
+              ),
+              _TinyActionButton(
+                tooltip: 'Copy log',
+                icon: Icons.copy_rounded,
+                onPressed: () async {
+                  await Clipboard.setData(ClipboardData(text: _logs.dump()));
+                  _showMessage('Log copied.');
+                },
+              ),
+              const SizedBox(width: 5),
+              _TinyActionButton(
+                tooltip: 'Clear log',
+                icon: Icons.delete_sweep_outlined,
+                onPressed: entries.isEmpty ? null : _logs.clear,
+              ),
+            ],
+          ),
+        ),
+        const Divider(height: 1),
+        Expanded(
+          child: entries.isEmpty
+              ? const _InspectorEmpty(
+                  icon: Icons.receipt_long_outlined,
+                  message: 'No log entries.',
+                )
+              : ListView.separated(
+                  padding: const EdgeInsets.all(12),
+                  itemCount: entries.length,
+                  separatorBuilder: (_, __) => const SizedBox(height: 7),
+                  itemBuilder: (context, index) => _CompactLogLine(entry: entries[index]),
+                ),
+        ),
+      ],
     );
   }
 
@@ -445,7 +1396,12 @@ class _PlayerScreenState extends State<PlayerScreen> {
   }
 
   void _hideUi() {
-    setState(() => _uiHidden = true);
+    setState(() {
+      _activePanel = null;
+      _libraryDetail = null;
+      _pendingDeleteAssetId = null;
+      _uiHidden = true;
+    });
   }
 
   void _showUi() {
@@ -553,1294 +1509,6 @@ class _PlayerScreenState extends State<PlayerScreen> {
     }
   }
 
-  Future<void> _showApplySheet() async {
-    await showModalBottomSheet<void>(
-      context: context,
-      useSafeArea: true,
-      isScrollControlled: true,
-      builder: (context) {
-        return FractionallySizedBox(
-          heightFactor: 0.90,
-          child: SafeArea(
-            top: false,
-            child: AnimatedBuilder(
-              animation: _library,
-              builder: (context, _) {
-                final models = _library.modelSlots;
-                final active = _library.activeModelSlot;
-                final modelNames = models.map((slot) => slot.model.name).join(', ');
-                return Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 2, 16, 16),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      _SheetHeader(
-                        title: 'Scene setup',
-                        subtitle: 'Choose what is currently loaded in the viewer.',
-                        action: IconButton.filledTonal(
-                          tooltip: 'Open library',
-                          onPressed: () => _openLibraryFromSheet(context),
-                          icon: const Icon(Icons.inventory_2_rounded),
-                        ),
-                      ),
-                      const SizedBox(height: 14),
-                      Expanded(
-                        child: ListView(
-                          physics: const BouncingScrollPhysics(),
-                          children: [
-                            _SectionHeading(
-                              title: 'Models',
-                              caption: models.isEmpty
-                                  ? 'Add one or more PMX/PMD models.'
-                                  : '${models.length} applied · tap a chip to choose the target.',
-                            ),
-                            if (models.isNotEmpty) ...[
-                              const SizedBox(height: 10),
-                              _ModelEditTabs(
-                                slots: models,
-                                activeId: active?.id,
-                                onSelected: _library.setActiveModelSlot,
-                              ),
-                            ],
-                            const SizedBox(height: 12),
-                            _SceneBindingCard(
-                              icon: _iconForKind(AssetKind.model),
-                              title: 'Applied models',
-                              scope: 'Scene',
-                              value: models.isEmpty ? 'No model selected' : modelNames,
-                              empty: models.isEmpty,
-                              onTap: () => _openPickerFromSheet(context, AssetKind.model),
-                              onClear: models.isEmpty
-                                  ? null
-                                  : () {
-                                      _library.clearSelection(AssetKind.model);
-                                      _logs.info('apply', 'Removed all models from the scene.');
-                                    },
-                            ),
-                            const SizedBox(height: 20),
-                            _SectionHeading(
-                              title: 'Model bindings',
-                              caption: active == null
-                                  ? 'These choices will be assigned to the first model you add.'
-                                  : 'Applied only to ${active.model.name}.',
-                            ),
-                            const SizedBox(height: 10),
-                            _AdaptiveCardGrid(
-                              children: [
-                                _SceneBindingCard(
-                                  icon: _iconForKind(AssetKind.motion),
-                                  title: 'Motion',
-                                  scope: active == null ? 'Next model' : 'Active model',
-                                  value: _library.selectedMotion?.name ?? 'Not selected',
-                                  empty: _library.selectedMotion == null,
-                                  onTap: () => _openPickerFromSheet(context, AssetKind.motion),
-                                  onClear: _library.selectedMotion == null
-                                      ? null
-                                      : () => _library.clearSelection(AssetKind.motion),
-                                ),
-                                _SceneBindingCard(
-                                  icon: _iconForKind(AssetKind.face),
-                                  title: 'Face',
-                                  scope: active == null ? 'Next model' : 'Active model',
-                                  value: _library.selectedFace?.name ?? 'Not selected',
-                                  empty: _library.selectedFace == null,
-                                  onTap: () => _openPickerFromSheet(context, AssetKind.face),
-                                  onClear: _library.selectedFace == null
-                                      ? null
-                                      : () => _library.clearSelection(AssetKind.face),
-                                ),
-                              ],
-                            ),
-                            const SizedBox(height: 20),
-                            const _SectionHeading(
-                              title: 'Scene bindings',
-                              caption: 'Shared by every model in the scene.',
-                            ),
-                            const SizedBox(height: 10),
-                            _AdaptiveCardGrid(
-                              children: [
-                                _SceneBindingCard(
-                                  icon: _iconForKind(AssetKind.camera),
-                                  title: 'Camera',
-                                  scope: 'Whole scene',
-                                  value: _library.selectedCamera?.name ?? 'Manual camera',
-                                  empty: _library.selectedCamera == null,
-                                  onTap: () => _openPickerFromSheet(context, AssetKind.camera),
-                                  onClear: _library.selectedCamera == null
-                                      ? null
-                                      : () => _library.clearSelection(AssetKind.camera),
-                                ),
-                                _SceneBindingCard(
-                                  icon: _iconForKind(AssetKind.audio),
-                                  title: 'Audio',
-                                  scope: 'Whole scene',
-                                  value: _library.selectedAudio?.name ?? 'No audio',
-                                  empty: _library.selectedAudio == null,
-                                  onTap: () => _openPickerFromSheet(context, AssetKind.audio),
-                                  onClear: _library.selectedAudio == null
-                                      ? null
-                                      : () => _library.clearSelection(AssetKind.audio),
-                                ),
-                              ],
-                            ),
-                            const SizedBox(height: 20),
-                            _SceneShortcutCard(
-                              icon: Icons.playlist_play_rounded,
-                              title: 'Dance packages',
-                              subtitle: _library.dancePackages.isEmpty
-                                  ? 'No packages imported yet'
-                                  : '${_library.dancePackages.length} ready to apply',
-                              onTap: () {
-                                Navigator.of(context).pop();
-                                Future.delayed(const Duration(milliseconds: 160), () {
-                                  if (mounted) _showDancePackagePicker();
-                                });
-                              },
-                            ),
-                            const SizedBox(height: 20),
-                            OutlinedButton.icon(
-                              onPressed: models.isEmpty &&
-                                      _library.selectedMotion == null &&
-                                      _library.selectedCamera == null &&
-                                      _library.selectedAudio == null &&
-                                      _library.selectedFace == null
-                                  ? null
-                                  : () {
-                                      _library.clearScene();
-                                      _logs.info('apply', 'Scene bindings cleared.');
-                                      Navigator.of(context).pop();
-                                    },
-                              icon: const Icon(Icons.layers_clear_rounded),
-                              label: const Text('Clear entire scene'),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ],
-                  ),
-                );
-              },
-            ),
-          ),
-        );
-      },
-    );
-  }
-
-  void _openPickerFromSheet(BuildContext sheetContext, AssetKind kind) {
-    Navigator.of(sheetContext).pop();
-    Future.delayed(const Duration(milliseconds: 160), () {
-      if (mounted) _showAssetPicker(kind);
-    });
-  }
-
-  void _openLibraryFromSheet(BuildContext sheetContext) {
-    Navigator.of(sheetContext).pop();
-    Future.delayed(const Duration(milliseconds: 160), () {
-      if (mounted) _showLibraryManager();
-    });
-  }
-
-  Future<void> _showAssetPicker(AssetKind kind) async {
-    var query = '';
-    final searchController = TextEditingController();
-    await showModalBottomSheet<void>(
-      context: context,
-      useSafeArea: true,
-      isScrollControlled: true,
-      builder: (context) {
-        return StatefulBuilder(
-          builder: (context, setSheetState) {
-            return FractionallySizedBox(
-              heightFactor: 0.92,
-              child: SafeArea(
-                top: false,
-                child: AnimatedBuilder(
-                  animation: _library,
-                  builder: (context, _) {
-                    final normalizedQuery = query.trim().toLowerCase();
-                    final assets = _library.byKind(kind).where((asset) {
-                      if (normalizedQuery.isEmpty) return true;
-                      return asset.name.toLowerCase().contains(normalizedQuery) ||
-                          asset.sourceName.toLowerCase().contains(normalizedQuery);
-                    }).toList(growable: false);
-                    final selected = _selectedAssetForKind(kind);
-                    return Padding(
-                      padding: const EdgeInsets.fromLTRB(16, 2, 16, 14),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          _SheetHeader(
-                            title: 'Choose ${kind.label.toLowerCase()}',
-                            subtitle: kind == AssetKind.model
-                                ? 'Select multiple models for the scene.'
-                                : _assetScopeDescription(kind),
-                            action: IconButton.filled(
-                              tooltip: 'Import ${kind.label.toLowerCase()}',
-                              onPressed: _library.busy ? null : () => _import(kind),
-                              icon: _library.busy
-                                  ? const SizedBox.square(
-                                      dimension: 18,
-                                      child: CircularProgressIndicator(strokeWidth: 2),
-                                    )
-                                  : const Icon(Icons.add_rounded),
-                            ),
-                          ),
-                          const SizedBox(height: 10),
-                          Expanded(
-                            child: ListView(
-                              keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
-                              physics: const BouncingScrollPhysics(),
-                              children: [
-                                if ((kind == AssetKind.motion || kind == AssetKind.face) &&
-                                    _library.modelSlots.isNotEmpty) ...[
-                                  _TargetModelStrip(
-                                    slots: _library.modelSlots,
-                                    activeId: _library.activeModelSlot?.id,
-                                    onSelected: _library.setActiveModelSlot,
-                                  ),
-                                  const SizedBox(height: 10),
-                                ],
-                                if (kind != AssetKind.model && selected != null) ...[
-                                  _SelectedAssetBanner(
-                                    asset: selected,
-                                    onClear: () => _library.clearSelection(kind),
-                                  ),
-                                  const SizedBox(height: 10),
-                                ],
-                                TextField(
-                                  controller: searchController,
-                                  onChanged: (value) => setSheetState(() => query = value),
-                                  decoration: InputDecoration(
-                                    hintText: 'Search ${kind.label.toLowerCase()}',
-                                    prefixIcon: const Icon(Icons.search_rounded),
-                                  ),
-                                ),
-                                const SizedBox(height: 12),
-                                if (assets.isEmpty)
-                                  SizedBox(
-                                    height: 240,
-                                    child: normalizedQuery.isEmpty
-                                        ? _EmptyAssets(kind: kind, onImport: () => _import(kind))
-                                        : const _EmptySearchResult(),
-                                  )
-                                else
-                                  for (var index = 0; index < assets.length; index++) ...[
-                                    if (index > 0) const SizedBox(height: 8),
-                                    _AssetRow(
-                                      asset: assets[index],
-                                      selected: kind == AssetKind.model
-                                          ? _library.isModelApplied(assets[index])
-                                          : _isSelected(assets[index]),
-                                      showCheckbox: kind == AssetKind.model,
-                                      onTap: () => _applyAsset(assets[index]),
-                                      onEdit: () {
-                                        final asset = assets[index];
-                                        Navigator.of(context).pop();
-                                        Future.delayed(const Duration(milliseconds: 160), () {
-                                          if (mounted) _showAssetEditor(asset);
-                                        });
-                                      },
-                                    ),
-                                  ],
-                                const SizedBox(height: 12),
-                                FilledButton(
-                                  onPressed: () => Navigator.of(context).pop(),
-                                  child: const Text('Done'),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ],
-                      ),
-                    );
-                  },
-                ),
-              ),
-            );
-          },
-        );
-      },
-    );
-    searchController.dispose();
-  }
-
-  Future<void> _showDancePackagePicker() async {
-    await showModalBottomSheet<void>(
-      context: context,
-      useSafeArea: true,
-      isScrollControlled: true,
-      builder: (context) {
-        return FractionallySizedBox(
-          heightFactor: 0.82,
-          child: SafeArea(
-            top: false,
-            child: AnimatedBuilder(
-              animation: _library,
-              builder: (context, _) {
-                final packages = _library.dancePackages;
-                final target = _library.activeModelSlot?.model.name;
-                return Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 2, 16, 16),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const _SheetHeader(
-                        title: 'Dance packages',
-                        subtitle: 'Apply a matched motion, face and audio set in one step.',
-                      ),
-                      const SizedBox(height: 10),
-                      Expanded(
-                        child: ListView(
-                          physics: const BouncingScrollPhysics(),
-                          children: [
-                            if (_library.modelSlots.isNotEmpty) ...[
-                              const _SectionHeading(
-                                title: 'Target model',
-                                caption: 'Motion and face go to this model; audio is shared.',
-                              ),
-                              const SizedBox(height: 8),
-                              _ModelEditTabs(
-                                slots: _library.modelSlots,
-                                activeId: _library.activeModelSlot?.id,
-                                onSelected: _library.setActiveModelSlot,
-                              ),
-                              const SizedBox(height: 12),
-                            ] else ...[
-                              const _InlineNotice(
-                                icon: Icons.info_outline_rounded,
-                                text: 'No model is applied. Motion and face will be prepared for the next model.',
-                              ),
-                              const SizedBox(height: 12),
-                            ],
-                            const _InlineNotice(
-                              icon: Icons.videocam_off_outlined,
-                              text: 'Camera files inside a package are detected but are not applied automatically.',
-                            ),
-                            const SizedBox(height: 12),
-                            if (packages.isEmpty)
-                              const SizedBox(height: 240, child: _DancePackageEmptyState())
-                            else
-                              for (var index = 0; index < packages.length; index++) ...[
-                                if (index > 0) const SizedBox(height: 8),
-                                _DancePackageRow(
-                                  bundle: packages[index],
-                                  target: target,
-                                  onTap: () {
-                                    final bundle = packages[index];
-                                    _library.applyDancePackage(bundle);
-                                    _logs.info(
-                                      'apply',
-                                      target == null
-                                          ? 'Applied dance package ${bundle.name} without camera.'
-                                          : 'Applied dance package ${bundle.name} to $target without camera.',
-                                    );
-                                    Navigator.of(context).pop();
-                                  },
-                                ),
-                              ],
-                          ],
-                        ),
-                      ),
-                    ],
-                  ),
-                );
-              },
-            ),
-          ),
-        );
-      },
-    );
-  }
-
-  Future<void> _showLibraryManager() async {
-    var selectedKind = AssetKind.model;
-    var query = '';
-    final searchController = TextEditingController();
-    await showModalBottomSheet<void>(
-      context: context,
-      useSafeArea: true,
-      isScrollControlled: true,
-      builder: (context) {
-        return StatefulBuilder(
-          builder: (context, setSheetState) {
-            return FractionallySizedBox(
-              heightFactor: 0.94,
-              child: SafeArea(
-                top: false,
-                child: AnimatedBuilder(
-                  animation: _library,
-                  builder: (context, _) {
-                    final normalizedQuery = query.trim().toLowerCase();
-                    final assets = _library.byKind(selectedKind).where((asset) {
-                      if (normalizedQuery.isEmpty) return true;
-                      return asset.name.toLowerCase().contains(normalizedQuery) ||
-                          asset.sourceName.toLowerCase().contains(normalizedQuery) ||
-                          _assetCapability(asset).toLowerCase().contains(normalizedQuery);
-                    }).toList(growable: false);
-                    return Padding(
-                      padding: const EdgeInsets.fromLTRB(16, 2, 16, 14),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          _SheetHeader(
-                            title: 'Resource library',
-                            subtitle: '${_library.assets.length} imported assets',
-                            action: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                IconButton.filledTonal(
-                                  tooltip: 'Reload library',
-                                  onPressed: _library.busy ? null : () => _library.load(),
-                                  icon: const Icon(Icons.refresh_rounded),
-                                ),
-                                const SizedBox(width: 8),
-                                IconButton.filled(
-                                  tooltip: 'Import ${selectedKind.label.toLowerCase()}',
-                                  onPressed: _library.busy ? null : () => _import(selectedKind),
-                                  icon: _library.busy
-                                      ? const SizedBox.square(
-                                          dimension: 18,
-                                          child: CircularProgressIndicator(strokeWidth: 2),
-                                        )
-                                      : const Icon(Icons.add_rounded),
-                                ),
-                              ],
-                            ),
-                          ),
-                          const SizedBox(height: 10),
-                          Expanded(
-                            child: ListView(
-                              keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
-                              physics: const BouncingScrollPhysics(),
-                              children: [
-                                _LibraryCategoryBar(
-                                  selected: selectedKind,
-                                  counts: {
-                                    for (final kind in const [
-                                      AssetKind.model,
-                                      AssetKind.motion,
-                                      AssetKind.camera,
-                                      AssetKind.audio,
-                                      AssetKind.face,
-                                    ])
-                                      kind: _library.byKind(kind).length,
-                                  },
-                                  onSelected: (kind) {
-                                    setSheetState(() {
-                                      selectedKind = kind;
-                                      query = '';
-                                      searchController.clear();
-                                    });
-                                  },
-                                ),
-                                const SizedBox(height: 12),
-                                if ((selectedKind == AssetKind.motion ||
-                                        selectedKind == AssetKind.face) &&
-                                    _library.modelSlots.isNotEmpty) ...[
-                                  _TargetModelStrip(
-                                    slots: _library.modelSlots,
-                                    activeId: _library.activeModelSlot?.id,
-                                    onSelected: _library.setActiveModelSlot,
-                                  ),
-                                  const SizedBox(height: 10),
-                                ],
-                                TextField(
-                                  controller: searchController,
-                                  onChanged: (value) => setSheetState(() => query = value),
-                                  decoration: InputDecoration(
-                                    hintText: 'Search ${selectedKind.label.toLowerCase()}',
-                                    prefixIcon: const Icon(Icons.search_rounded),
-                                  ),
-                                ),
-                                const SizedBox(height: 12),
-                                if (assets.isEmpty)
-                                  SizedBox(
-                                    height: 240,
-                                    child: normalizedQuery.isEmpty
-                                        ? _EmptyAssets(
-                                            kind: selectedKind,
-                                            onImport: () => _import(selectedKind),
-                                          )
-                                        : const _EmptySearchResult(),
-                                  )
-                                else
-                                  for (var index = 0; index < assets.length; index++) ...[
-                                    if (index > 0) const SizedBox(height: 8),
-                                    _AssetRow(
-                                      asset: assets[index],
-                                      selected: _isSelected(assets[index]),
-                                      showCheckbox: selectedKind == AssetKind.model,
-                                      onTap: () => _applyAsset(assets[index]),
-                                      onEdit: () {
-                                        final asset = assets[index];
-                                        Navigator.of(context).pop();
-                                        Future.delayed(const Duration(milliseconds: 160), () {
-                                          if (mounted) _showAssetEditor(asset);
-                                        });
-                                      },
-                                    ),
-                                  ],
-                              ],
-                            ),
-                          ),
-                        ],
-                      ),
-                    );
-                  },
-                ),
-              ),
-            );
-          },
-        );
-      },
-    );
-    searchController.dispose();
-  }
-
-  Future<void> _showAssetEditor(LibraryAsset initialAsset) async {
-    final nameController = TextEditingController(text: initialAsset.name);
-    try {
-      await showModalBottomSheet<void>(
-        context: context,
-        useSafeArea: true,
-        isScrollControlled: true,
-        builder: (context) {
-          final keyboard = MediaQuery.viewInsetsOf(context).bottom;
-          return AnimatedPadding(
-            duration: const Duration(milliseconds: 180),
-            curve: Curves.easeOutCubic,
-            padding: EdgeInsets.only(bottom: keyboard),
-            child: FractionallySizedBox(
-              heightFactor: 0.82,
-              child: SafeArea(
-                top: false,
-                child: AnimatedBuilder(
-                  animation: _library,
-                  builder: (context, _) {
-                    final asset = _library.assets.firstWhere(
-                      (item) => item.id == initialAsset.id,
-                      orElse: () => initialAsset,
-                    );
-                    return ListView(
-                      keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
-                      physics: const BouncingScrollPhysics(),
-                      padding: const EdgeInsets.fromLTRB(16, 2, 16, 18),
-                      children: [
-                        const _SheetHeader(
-                          title: 'Asset details',
-                          subtitle: 'Rename, rescan or remove this imported resource.',
-                        ),
-                        const SizedBox(height: 16),
-                        _AssetIdentityCard(asset: asset),
-                        const SizedBox(height: 16),
-                        TextField(
-                          controller: nameController,
-                          decoration: const InputDecoration(
-                            labelText: 'Display name',
-                            prefixIcon: Icon(Icons.edit_rounded),
-                          ),
-                          textInputAction: TextInputAction.done,
-                        ),
-                        const SizedBox(height: 16),
-                        _DetailSurface(
-                          children: [
-                            _DetailLine(label: 'Type', value: asset.kind.label),
-                            _DetailLine(label: 'Files', value: '${asset.fileCount} files'),
-                            _DetailLine(label: 'Size', value: _formatBytes(asset.totalBytes)),
-                            _DetailLine(label: 'Detected', value: _assetCapability(asset)),
-                            _DetailLine(label: 'Source', value: asset.sourceName),
-                          ],
-                        ),
-                        const SizedBox(height: 18),
-                        FilledButton.icon(
-                          onPressed: _library.busy
-                              ? null
-                              : () async {
-                                  final updated = await _library.rename(
-                                    asset,
-                                    nameController.text,
-                                  );
-                                  if (updated != null) {
-                                    _logs.info('library', 'Renamed ${asset.name} to ${updated.name}.');
-                                    if (context.mounted) Navigator.of(context).pop();
-                                    _showMessage('Saved ${updated.name}.');
-                                  }
-                                },
-                          icon: const Icon(Icons.save_rounded),
-                          label: const Text('Save name'),
-                        ),
-                        const SizedBox(height: 10),
-                        OutlinedButton.icon(
-                          onPressed: _library.busy
-                              ? null
-                              : () async {
-                                  final updated = await _library.rescan(asset);
-                                  if (updated != null) {
-                                    _logs.info('library', 'Rescanned ${updated.name}.');
-                                  }
-                                },
-                          icon: const Icon(Icons.manage_search_rounded),
-                          label: const Text('Rescan files'),
-                        ),
-                        const SizedBox(height: 10),
-                        OutlinedButton.icon(
-                          onPressed: _library.busy
-                              ? null
-                              : () async {
-                                  final confirmed = await _confirmDelete(asset);
-                                  if (!confirmed || !context.mounted) return;
-                                  await _library.delete(asset);
-                                  _logs.warning('library', 'Deleted ${asset.name}.');
-                                  if (context.mounted) Navigator.of(context).pop();
-                                },
-                          icon: const Icon(Icons.delete_outline_rounded),
-                          label: const Text('Delete resource'),
-                          style: OutlinedButton.styleFrom(
-                            foregroundColor: AppColors.danger,
-                            side: const BorderSide(color: AppColors.danger),
-                          ),
-                        ),
-                      ],
-                    );
-                  },
-                ),
-              ),
-            ),
-          );
-        },
-      );
-    } finally {
-      nameController.dispose();
-    }
-  }
-
-  Future<bool> _confirmDelete(LibraryAsset asset) async {
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (context) {
-        return AlertDialog(
-          title: const Text('Delete asset'),
-          content: Text('Delete "${asset.name}" from the internal library?'),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(context).pop(false),
-              child: const Text('Cancel'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.of(context).pop(true),
-              style: FilledButton.styleFrom(backgroundColor: AppColors.danger),
-              child: const Text('Delete'),
-            ),
-          ],
-        );
-      },
-    );
-    return confirmed ?? false;
-  }
-
-  Future<void> _showLogSheet() async {
-    await showModalBottomSheet<void>(
-      context: context,
-      useSafeArea: true,
-      isScrollControlled: true,
-      builder: (context) {
-        return FractionallySizedBox(
-          heightFactor: 0.82,
-          child: SafeArea(
-            top: false,
-            child: AnimatedBuilder(
-              animation: _logs,
-              builder: (context, _) {
-                final entries = _logs.entries;
-                return Padding(
-                  padding: const EdgeInsets.fromLTRB(20, 4, 20, 20),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      _SheetHeader(
-                        title: 'Recent log',
-                        subtitle: '${entries.length} recent renderer and library events',
-                        action: Wrap(
-                          spacing: 8,
-                          children: [
-                            IconButton.filledTonal(
-                              tooltip: 'Copy log',
-                              onPressed: () async {
-                                await Clipboard.setData(ClipboardData(text: _logs.dump()));
-                                _logs.info('app', 'Log copied to clipboard.');
-                              },
-                              icon: const Icon(Icons.copy_rounded),
-                            ),
-                            IconButton.filledTonal(
-                              tooltip: 'Clear log',
-                              onPressed: _logs.clear,
-                              icon: const Icon(Icons.clear_all_rounded),
-                            ),
-                          ],
-                        ),
-                      ),
-                      const SizedBox(height: 12),
-                      Expanded(
-                        child: entries.isEmpty
-                            ? const Center(
-                                child: Text(
-                                  'No log entries.',
-                                  style: TextStyle(color: AppColors.textMuted),
-                                ),
-                              )
-                            : ListView.separated(
-                                itemCount: entries.length,
-                                separatorBuilder: (context, index) => const Divider(
-                                  color: AppColors.line,
-                                  height: 18,
-                                ),
-                                itemBuilder: (context, index) {
-                                  final entry = entries[index];
-                                  return _LogLine(entry: entry);
-                                },
-                              ),
-                      ),
-                    ],
-                  ),
-                );
-              },
-            ),
-          ),
-        );
-      },
-    );
-  }
-
-  Future<void> _showLookSheet() async {
-    var draft = _look;
-    await showModalBottomSheet<void>(
-      context: context,
-      useSafeArea: true,
-      isScrollControlled: true,
-      builder: (context) {
-        return StatefulBuilder(
-          builder: (context, setSheetState) {
-            void update(_LookSettings next, {bool log = false}) {
-              setSheetState(() => draft = next);
-              _setLook(next, log: log);
-            }
-
-            return FractionallySizedBox(
-              heightFactor: 0.90,
-              child: SafeArea(
-                top: false,
-                child: ListView(
-                  physics: const BouncingScrollPhysics(),
-                  padding: const EdgeInsets.fromLTRB(16, 2, 16, 20),
-                  children: [
-                    const _SheetHeader(
-                      title: 'Look & lighting',
-                      subtitle: 'Tune color, contrast and stage lighting without covering the viewer.',
-                    ),
-                    const SizedBox(height: 16),
-                    _SettingsToggleTile(
-                      icon: Icons.auto_awesome_rounded,
-                      title: 'Enhanced look',
-                      subtitle: 'Apply Danxe color and material tuning.',
-                      value: draft.enabled,
-                      onChanged: (value) => update(draft.copyWith(enabled: value)),
-                    ),
-                    const SizedBox(height: 20),
-                    const _SectionHeading(
-                      title: 'Presets',
-                      caption: 'Start with a balanced style, then fine tune below.',
-                    ),
-                    const SizedBox(height: 10),
-                    _LookPresetGrid(
-                      look: draft,
-                      onSelected: (preset) {
-                        update(_LookSettings.forPreset(preset, draft), log: true);
-                      },
-                    ),
-                    const SizedBox(height: 22),
-                    const _SectionHeading(
-                      title: 'Image',
-                      caption: 'Changes are previewed immediately.',
-                    ),
-                    const SizedBox(height: 10),
-                    _LookSettingsSlider(
-                      label: 'Exposure',
-                      icon: Icons.exposure_rounded,
-                      value: draft.exposure,
-                      min: 0.70,
-                      max: 1.60,
-                      onChanged: (value) => update(draft.copyWith(exposure: value)),
-                    ),
-                    _LookSettingsSlider(
-                      label: 'Contrast',
-                      icon: Icons.contrast_rounded,
-                      value: draft.contrast,
-                      min: 0.75,
-                      max: 2.00,
-                      onChanged: (value) => update(draft.copyWith(contrast: value)),
-                    ),
-                    _LookSettingsSlider(
-                      label: 'Saturation',
-                      icon: Icons.palette_rounded,
-                      value: draft.saturation,
-                      min: 0.50,
-                      max: 2.50,
-                      onChanged: (value) => update(draft.copyWith(saturation: value)),
-                    ),
-                    _LookSettingsSlider(
-                      label: 'Dehaze',
-                      icon: Icons.filter_b_and_w_rounded,
-                      value: draft.dehaze,
-                      min: 0,
-                      max: 0.45,
-                      onChanged: (value) => update(draft.copyWith(dehaze: value)),
-                    ),
-                    _LookSettingsSlider(
-                      label: 'Texture',
-                      icon: Icons.texture_rounded,
-                      value: draft.texture,
-                      min: 0.50,
-                      max: 2.00,
-                      onChanged: (value) => update(draft.copyWith(texture: value)),
-                    ),
-                    const SizedBox(height: 18),
-                    const _SectionHeading(
-                      title: 'Lighting',
-                      caption: 'Adjust the scene lights independently.',
-                    ),
-                    const SizedBox(height: 10),
-                    _LookSettingsSlider(
-                      label: 'Ambient',
-                      icon: Icons.light_mode_rounded,
-                      value: draft.ambient,
-                      min: 0.2,
-                      max: 2.4,
-                      onChanged: (value) => update(draft.copyWith(ambient: value)),
-                    ),
-                    _LookSettingsSlider(
-                      label: 'Key light',
-                      icon: Icons.flashlight_on_rounded,
-                      value: draft.key,
-                      min: 0.2,
-                      max: 3.2,
-                      onChanged: (value) => update(draft.copyWith(key: value)),
-                    ),
-                    _LookSettingsSlider(
-                      label: 'Rim light',
-                      icon: Icons.flare_rounded,
-                      value: draft.rim,
-                      min: 0,
-                      max: 1.8,
-                      onChanged: (value) => update(draft.copyWith(rim: value)),
-                    ),
-                  ],
-                ),
-              ),
-            );
-          },
-        );
-      },
-    );
-  }
-
-  Future<void> _showViewSheet() async {
-    await showModalBottomSheet<void>(
-      context: context,
-      useSafeArea: true,
-      isScrollControlled: true,
-      builder: (context) {
-        return StatefulBuilder(
-          builder: (context, setSheetState) {
-            return FractionallySizedBox(
-              heightFactor: 0.86,
-              child: SafeArea(
-                top: false,
-                child: ListView(
-                  physics: const BouncingScrollPhysics(),
-                  padding: const EdgeInsets.fromLTRB(16, 2, 16, 20),
-                  children: [
-                    const _SheetHeader(
-                      title: 'Viewer options',
-                      subtitle: 'Keep display controls in one predictable place.',
-                    ),
-                    const SizedBox(height: 16),
-                    _SettingsToggleTile(
-                      icon: Icons.grid_4x4_rounded,
-                      title: 'Grid',
-                      subtitle: 'Show the ground reference grid.',
-                      value: _gridVisible,
-                      onChanged: (_) async {
-                        await _toggleGrid();
-                        if (context.mounted) setSheetState(() {});
-                      },
-                    ),
-                    const SizedBox(height: 8),
-                    _SettingsToggleTile(
-                      icon: Icons.crop_square_rounded,
-                      title: 'Floor',
-                      subtitle: 'Use the solid stage floor instead of the grid.',
-                      value: _floorVisible,
-                      onChanged: (_) async {
-                        await _toggleFloor();
-                        if (context.mounted) setSheetState(() {});
-                      },
-                    ),
-                    const SizedBox(height: 22),
-                    _SectionHeading(
-                      title: 'Model parts',
-                      caption: _modelParts.isEmpty
-                          ? 'Part controls appear after a model finishes loading.'
-                          : '${_modelParts.length} materials available.',
-                    ),
-                    const SizedBox(height: 10),
-                    if (_modelParts.isEmpty)
-                      const _InlineNotice(
-                        icon: Icons.layers_outlined,
-                        text: 'No model parts are available yet.',
-                      )
-                    else
-                      _PartListSurface(
-                        parts: _modelParts,
-                        onToggle: (part) {
-                          _togglePartVisibility(part);
-                          setSheetState(() {});
-                        },
-                      ),
-                    const SizedBox(height: 20),
-                    OutlinedButton.icon(
-                      onPressed: () {
-                        Navigator.of(context).pop();
-                        _hideUi();
-                      },
-                      icon: const Icon(Icons.visibility_off_rounded),
-                      label: const Text('Hide all controls'),
-                    ),
-                  ],
-                ),
-              ),
-            );
-          },
-        );
-      },
-    );
-  }
-
-  Future<void> _showModelPlacementSheet() async {
-    if (_library.modelSlots.isEmpty) {
-      _showMessage('Apply a model before editing placement.');
-      return;
-    }
-    await showModalBottomSheet<void>(
-      context: context,
-      useSafeArea: true,
-      isScrollControlled: true,
-      builder: (context) {
-        return FractionallySizedBox(
-          heightFactor: 0.90,
-          child: SafeArea(
-            top: false,
-            child: AnimatedBuilder(
-              animation: _library,
-              builder: (context, _) {
-                final active = _library.activeModelSlot;
-                return Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 2, 16, 14),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const _SheetHeader(
-                        title: 'Model placement',
-                        subtitle: 'Select a model, then adjust its position in the scene.',
-                      ),
-                      const SizedBox(height: 12),
-                      _ModelEditTabs(
-                        slots: _library.modelSlots,
-                        activeId: active?.id,
-                        onSelected: _library.setActiveModelSlot,
-                      ),
-                      const SizedBox(height: 12),
-                      Expanded(
-                        child: active == null
-                            ? const _EmptySearchResult()
-                            : ListView(
-                                physics: const BouncingScrollPhysics(),
-                                children: [
-                                  _ModelNudgePad(
-                                    onMove: (x, y, z) => _moveActiveModel(x: x, y: y, z: z),
-                                  ),
-                                  const SizedBox(height: 12),
-                                  _ModelTransformPanel(
-                                    slot: active,
-                                    onChanged: _setActiveModelTransform,
-                                  ),
-                                ],
-                              ),
-                      ),
-                      const SizedBox(height: 10),
-                      SizedBox(
-                        width: double.infinity,
-                        child: FilledButton(
-                          onPressed: () => Navigator.of(context).pop(),
-                          child: const Text('Done'),
-                        ),
-                      ),
-                    ],
-                  ),
-                );
-              },
-            ),
-          ),
-        );
-      },
-    );
-  }
-
-  Future<void> _showCameraSheet() async {
-    await showModalBottomSheet<void>(
-      context: context,
-      useSafeArea: true,
-      isScrollControlled: true,
-      builder: (context) {
-        return FractionallySizedBox(
-          heightFactor: 0.80,
-          child: SafeArea(
-            top: false,
-            child: AnimatedBuilder(
-              animation: _player,
-              builder: (context, _) {
-                return ListView(
-                  physics: const BouncingScrollPhysics(),
-                  padding: const EdgeInsets.fromLTRB(16, 2, 16, 18),
-                  children: [
-                    _SheetHeader(
-                      title: 'Camera controls',
-                      subtitle: _library.selectedCamera == null
-                          ? 'Manual camera is active.'
-                          : 'A camera motion is applied. Manual changes will take control.',
-                      action: IconButton.filledTonal(
-                        tooltip: 'Reset camera',
-                        onPressed: () {
-                          _player.resetCamera();
-                          _pushCamera();
-                          _logs.info('camera', 'Camera reset.');
-                        },
-                        icon: const Icon(Icons.center_focus_strong_rounded),
-                      ),
-                    ),
-                    const SizedBox(height: 18),
-                    const _SectionHeading(
-                      title: 'Quick framing',
-                      caption: 'Frame every model with a consistent front view.',
-                    ),
-                    const SizedBox(height: 10),
-                    _AdaptiveCardGrid(
-                      children: [
-                        _CameraPresetCard(
-                          icon: Icons.accessibility_new_rounded,
-                          title: 'Full body',
-                          subtitle: 'Front view with the full model in frame',
-                          onTap: () => _applyCameraPreset('fullFront'),
-                        ),
-                        _CameraPresetCard(
-                          icon: Icons.portrait_rounded,
-                          title: 'Half body',
-                          subtitle: 'Closer front portrait framing',
-                          onTap: () => _applyCameraPreset('halfFront'),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 22),
-                    const _SectionHeading(
-                      title: 'Manual orbit',
-                      caption: 'Fine tune the viewing angle and distance.',
-                    ),
-                    const SizedBox(height: 10),
-                    _CameraSlider(
-                      label: 'Yaw',
-                      value: _player.yaw,
-                      min: -180,
-                      max: 180,
-                      suffix: '°',
-                      onChanged: (value) {
-                        _player.orbit(yaw: value);
-                        _pushCamera();
-                      },
-                    ),
-                    const SizedBox(height: 8),
-                    _CameraSlider(
-                      label: 'Pitch',
-                      value: _player.pitch,
-                      min: -80,
-                      max: 80,
-                      suffix: '°',
-                      onChanged: (value) {
-                        _player.orbit(pitch: value);
-                        _pushCamera();
-                      },
-                    ),
-                    const SizedBox(height: 8),
-                    _CameraSlider(
-                      label: 'Distance',
-                      value: _player.distance,
-                      min: 1.4,
-                      max: 80,
-                      onChanged: (value) {
-                        _player.orbit(distance: value);
-                        _pushCamera();
-                      },
-                    ),
-                  ],
-                );
-              },
-            ),
-          ),
-        );
-      },
-    );
-  }
-
-  Future<void> _showExportSheet() async {
-    final models = _library.modelSlots.where((slot) => slot.hasRenderableModel).toList(growable: false);
-    if (models.isEmpty) return;
-    final model = models.first.model;
-    final screenExportSize = _currentScreenExportSize(context);
-    final sizeLabels = <String, String>{
-      '1920x1080': '16:9',
-      '1080x1920': '9:16',
-      '1280x720': '720p',
-    };
-    final screenKey = '${screenExportSize.width}x${screenExportSize.height}';
-    sizeLabels[screenKey] = sizeLabels.containsKey(screenKey)
-        ? '${sizeLabels[screenKey]}/Scr'
-        : 'Screen';
-    var settings = ExportSettings(
-      durationSeconds: _player.duration > 0
-          ? _player.duration.round().clamp(1, 600).toInt()
-          : 10,
-    );
-    await showModalBottomSheet<void>(
-      context: context,
-      useSafeArea: true,
-      isScrollControlled: true,
-      builder: (context) {
-        return StatefulBuilder(
-          builder: (context, setSheetState) {
-            return FractionallySizedBox(
-              heightFactor: 0.86,
-              child: SafeArea(
-                top: false,
-                child: ListView(
-                  physics: const BouncingScrollPhysics(),
-                  padding: const EdgeInsets.fromLTRB(16, 2, 16, 20),
-                  children: [
-                    const _SheetHeader(
-                      title: 'Export video',
-                      subtitle: 'Record the current scene to Download/danxe.',
-                    ),
-                    const SizedBox(height: 16),
-                    const _InlineNotice(
-                      icon: Icons.schedule_rounded,
-                      text: 'Recording runs in real time. Keep Danxe open until the export finishes.',
-                    ),
-                    const SizedBox(height: 16),
-                    _SegmentedExportRow(
-                      label: 'Size',
-                      value: '${settings.width}x${settings.height}',
-                      options: sizeLabels.keys.toList(growable: false),
-                      labels: sizeLabels,
-                      onSelected: (value) {
-                        final parts = value.split('x').map(int.parse).toList();
-                        setSheetState(() {
-                          settings = settings.copyWith(width: parts[0], height: parts[1]);
-                        });
-                      },
-                    ),
-                    const SizedBox(height: 12),
-                    _SegmentedExportRow(
-                      label: 'FPS',
-                      value: '${settings.fps}',
-                      options: const ['30', '60'],
-                      onSelected: (value) {
-                        setSheetState(() => settings = settings.copyWith(fps: int.parse(value)));
-                      },
-                    ),
-                    const SizedBox(height: 12),
-                    _SegmentedExportRow(
-                      label: 'Bitrate',
-                      value: '${settings.videoBitrateMbps}',
-                      options: const ['12', '16', '24'],
-                      labels: const {'12': '12M', '16': '16M', '24': '24M'},
-                      onSelected: (value) {
-                        setSheetState(() {
-                          settings = settings.copyWith(videoBitrateMbps: int.parse(value));
-                        });
-                      },
-                    ),
-                    const SizedBox(height: 12),
-                    _SegmentedExportRow(
-                      label: 'Length',
-                      value: '${settings.durationSeconds}',
-                      options: [
-                        '10',
-                        '30',
-                        '${_player.duration > 0 ? _player.duration.round().clamp(1, 600) : 10}',
-                      ],
-                      onSelected: (value) {
-                        setSheetState(() {
-                          settings = settings.copyWith(durationSeconds: int.parse(value));
-                        });
-                      },
-                    ),
-                    const SizedBox(height: 16),
-                    FilledButton.icon(
-                      onPressed: _exporting
-                          ? null
-                          : () async {
-                              final messenger = ScaffoldMessenger.of(this.context);
-                              setState(() => _exporting = true);
-                              setSheetState(() {});
-                              _logs.info('export', 'Started ${settings.width}x${settings.height} ${settings.fps}fps.');
-                              try {
-                                final job = await _export.exportVideo(
-                                  settings: settings,
-                                  model: model,
-                                  motion: _library.selectedMotion,
-                                  camera: _library.selectedCamera,
-                                  audio: _library.selectedAudio,
-                                );
-                                if (context.mounted) Navigator.of(context).pop();
-                                _logs.info('export', 'Video exported to ${job.path}.');
-                                messenger.showSnackBar(
-                                  SnackBar(content: Text('Video exported: ${job.path}')),
-                                );
-                              } catch (error) {
-                                if (mounted) setState(() => _exporting = false);
-                                if (context.mounted) setSheetState(() {});
-                                _logs.error('export', error.toString());
-                                messenger.showSnackBar(
-                                  SnackBar(content: Text(error.toString())),
-                                );
-                              }
-                            },
-                      icon: _exporting
-                          ? const SizedBox.square(
-                              dimension: 18,
-                              child: CircularProgressIndicator(strokeWidth: 2),
-                            )
-                          : const Icon(Icons.movie_creation_rounded),
-                      label: Text(_exporting ? 'Recording...' : 'Record video'),
-                    ),
-                  ],
-                ),
-              ),
-            );
-          },
-        );
-      },
-    );
-  }
-
   ({int width, int height}) _currentScreenExportSize(BuildContext context) {
     final size = MediaQuery.sizeOf(context);
     final aspect = size.width / (size.height <= 0 ? 1.0 : size.height);
@@ -1870,7 +1538,13 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
   void _applyAsset(LibraryAsset asset) {
     final wasApplied = asset.kind == AssetKind.model && _library.isModelApplied(asset);
+    final wasSelected = _isSelected(asset);
     final activeBefore = _library.activeModelSlot;
+    if (asset.kind != AssetKind.model && wasSelected) {
+      _library.clearSelection(asset.kind);
+      _logs.info('apply', 'Cleared ${asset.kind.name}: ${asset.name}.');
+      return;
+    }
     _library.select(asset);
     if (asset.kind == AssetKind.model) {
       _logs.info('apply', '${wasApplied ? 'Removed' : 'Applied'} model: ${asset.name}.');
@@ -1951,6 +1625,1404 @@ class NativeMmdViewport extends StatelessWidget {
     return AndroidView(
       viewType: 'danxe/mmd_view',
       creationParamsCodec: const StandardMessageCodec(),
+    );
+  }
+}
+
+class _FloatingSceneChip extends StatelessWidget {
+  const _FloatingSceneChip({
+    required this.models,
+    required this.activeModel,
+    required this.player,
+    required this.busy,
+    required this.maxWidth,
+    required this.onPressed,
+    required this.onHide,
+  });
+
+  final List<AppliedModelSlot> models;
+  final AppliedModelSlot? activeModel;
+  final PlayerController player;
+  final bool busy;
+  final double maxWidth;
+  final VoidCallback onPressed;
+  final VoidCallback onHide;
+
+  @override
+  Widget build(BuildContext context) {
+    final title = models.isEmpty
+        ? 'Scene'
+        : models.length == 1
+            ? models.first.model.name
+            : '${models.length} models · ${activeModel?.model.name ?? models.first.model.name}';
+    final status = player.error ??
+        (player.loading
+            ? 'Loading scene…'
+            : player.loaded
+                ? player.playing
+                    ? 'Playing · ${player.timeLabel}'
+                    : 'Ready · ${player.timeLabel}'
+                : 'Choose resources to begin');
+    final statusColor = player.error != null
+        ? AppColors.danger
+        : player.loaded
+            ? AppColors.success
+            : AppColors.textMuted;
+    return ConstrainedBox(
+      constraints: BoxConstraints(maxWidth: maxWidth),
+      child: Material(
+        color: AppColors.surface.withOpacity(0.96),
+        elevation: 0,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(12),
+          side: const BorderSide(color: AppColors.line),
+        ),
+        clipBehavior: Clip.antiAlias,
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Flexible(
+              child: InkWell(
+                onTap: onPressed,
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(9, 6, 8, 6),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Container(
+                        width: 29,
+                        height: 29,
+                        decoration: BoxDecoration(
+                          color: AppColors.surfaceHigh,
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: const Icon(Icons.view_in_ar_outlined, size: 17),
+                      ),
+                      const SizedBox(width: 8),
+                      Flexible(
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              title,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                fontSize: 12.5,
+                                height: 1.1,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                            const SizedBox(height: 3),
+                            Text(
+                              status,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                color: player.error == null
+                                    ? AppColors.textMuted
+                                    : AppColors.danger,
+                                fontSize: 10,
+                                height: 1.1,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(width: 7),
+                      if (busy || player.loading)
+                        const SizedBox.square(
+                          dimension: 13,
+                          child: CircularProgressIndicator(strokeWidth: 1.6),
+                        )
+                      else
+                        Container(
+                          width: 7,
+                          height: 7,
+                          decoration: BoxDecoration(
+                            color: statusColor,
+                            shape: BoxShape.circle,
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+            SizedBox(
+              width: 34,
+              height: 42,
+              child: IconButton(
+                tooltip: 'Hide controls',
+                padding: EdgeInsets.zero,
+                onPressed: onHide,
+                style: IconButton.styleFrom(
+                  minimumSize: const Size(34, 42),
+                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                ),
+                icon: const Icon(Icons.visibility_off_outlined, size: 17),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _FloatingInspector extends StatelessWidget {
+  const _FloatingInspector({
+    required this.kind,
+    required this.onClose,
+    required this.child,
+  });
+
+  final _FloatingPanelKind kind;
+  final VoidCallback onClose;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    final (title, icon) = switch (kind) {
+      _FloatingPanelKind.scene => ('Scene', Icons.layers_outlined),
+      _FloatingPanelKind.library => ('Resources', Icons.folder_copy_outlined),
+      _FloatingPanelKind.camera => ('Camera', Icons.video_camera_front_outlined),
+      _FloatingPanelKind.view => ('Display', Icons.visibility_outlined),
+      _FloatingPanelKind.look => ('Color & light', Icons.tonality_rounded),
+      _FloatingPanelKind.placement => ('Placement', Icons.open_with_rounded),
+      _FloatingPanelKind.export => ('Export', Icons.movie_creation_outlined),
+      _FloatingPanelKind.logs => ('Activity', Icons.receipt_long_outlined),
+    };
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: AppColors.surface.withOpacity(0.97),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: AppColors.line),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.28),
+            blurRadius: 20,
+            offset: const Offset(0, 8),
+          ),
+        ],
+      ),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(11),
+        child: Column(
+          children: [
+            SizedBox(
+              height: 48,
+              child: Padding(
+                padding: const EdgeInsets.only(left: 12, right: 5),
+                child: Row(
+                  children: [
+                    Icon(icon, size: 18, color: AppColors.accent),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        title,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w700,
+                          letterSpacing: -0.1,
+                        ),
+                      ),
+                    ),
+                    SizedBox.square(
+                      dimension: 38,
+                      child: IconButton(
+                        tooltip: 'Close panel',
+                        padding: EdgeInsets.zero,
+                        onPressed: onClose,
+                        style: IconButton.styleFrom(
+                          minimumSize: const Size.square(38),
+                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        ),
+                        icon: const Icon(Icons.close_rounded, size: 19),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            const Divider(height: 1),
+            Expanded(child: child),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _FloatingToolRail extends StatelessWidget {
+  const _FloatingToolRail({
+    required this.horizontal,
+    required this.active,
+    required this.hasModels,
+    required this.canExport,
+    required this.onSelected,
+    this.maxExtent,
+  });
+
+  final bool horizontal;
+  final double? maxExtent;
+  final _FloatingPanelKind? active;
+  final bool hasModels;
+  final bool canExport;
+  final ValueChanged<_FloatingPanelKind> onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    final tools = <(_FloatingPanelKind, IconData, String, bool)>[
+      (_FloatingPanelKind.library, Icons.folder_copy_outlined, 'Resources', true),
+      (_FloatingPanelKind.camera, Icons.video_camera_front_outlined, 'Camera', true),
+      (_FloatingPanelKind.look, Icons.tonality_rounded, 'Color & light', true),
+      (_FloatingPanelKind.view, Icons.visibility_outlined, 'Display', true),
+      (_FloatingPanelKind.placement, Icons.open_with_rounded, 'Placement', hasModels),
+      (_FloatingPanelKind.export, Icons.movie_creation_outlined, 'Export', canExport),
+      (_FloatingPanelKind.logs, Icons.receipt_long_outlined, 'Activity', true),
+    ];
+    final content = Padding(
+      padding: const EdgeInsets.all(4),
+      child: Flex(
+        direction: horizontal ? Axis.horizontal : Axis.vertical,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          for (var index = 0; index < tools.length; index++) ...[
+            if (index > 0)
+              SizedBox(width: horizontal ? 4 : 0, height: horizontal ? 0 : 4),
+            _FloatingToolButton(
+              icon: tools[index].$2,
+              tooltip: tools[index].$3,
+              selected: active == tools[index].$1,
+              onPressed: tools[index].$4
+                  ? () => onSelected(tools[index].$1)
+                  : null,
+            ),
+          ],
+        ],
+      ),
+    );
+    final body = !horizontal && maxExtent != null
+        ? ConstrainedBox(
+            constraints: BoxConstraints(maxHeight: maxExtent!),
+            child: SingleChildScrollView(child: content),
+          )
+        : content;
+    return Material(
+      color: AppColors.surface.withOpacity(0.96),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: const BorderSide(color: AppColors.line),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: body,
+    );
+  }
+}
+
+class _FloatingToolButton extends StatelessWidget {
+  const _FloatingToolButton({
+    required this.icon,
+    required this.tooltip,
+    required this.selected,
+    required this.onPressed,
+  });
+
+  final IconData icon;
+  final String tooltip;
+  final bool selected;
+  final VoidCallback? onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox.square(
+      dimension: 40,
+      child: IconButton(
+        tooltip: tooltip,
+        padding: EdgeInsets.zero,
+        onPressed: onPressed,
+        style: IconButton.styleFrom(
+          minimumSize: const Size.square(40),
+          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+          backgroundColor: selected ? AppColors.primary.withOpacity(0.28) : Colors.transparent,
+          foregroundColor: selected ? AppColors.accent : AppColors.text,
+          disabledForegroundColor: AppColors.textMuted.withOpacity(0.35),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(9)),
+        ),
+        icon: Icon(icon, size: 19),
+      ),
+    );
+  }
+}
+
+class _FloatingTransportBar extends StatelessWidget {
+  const _FloatingTransportBar({
+    required this.player,
+    required this.exporting,
+    required this.onToggle,
+    required this.onSeek,
+    required this.onSpeed,
+  });
+
+  final PlayerController player;
+  final bool exporting;
+  final VoidCallback onToggle;
+  final ValueChanged<double> onSeek;
+  final ValueChanged<double> onSpeed;
+
+  @override
+  Widget build(BuildContext context) {
+    final duration = player.duration <= 0 ? 1.0 : player.duration;
+    final position = player.duration <= 0
+        ? 0.0
+        : player.position.clamp(0, player.duration).toDouble();
+    const speeds = [0.5, 1.0, 1.5, 2.0];
+    final current = speeds.indexWhere((value) => (value - player.speed).abs() < 0.01);
+    final nextSpeed = speeds[(current < 0 ? 0 : current + 1) % speeds.length];
+    final speedLabel = '${player.speed.toStringAsFixed(
+      player.speed == player.speed.roundToDouble() ? 0 : 1,
+    )}x';
+    return Material(
+      color: AppColors.surface.withOpacity(0.96),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: const BorderSide(color: AppColors.line),
+      ),
+      child: SizedBox(
+        height: 54,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 7),
+          child: Row(
+            children: [
+              SizedBox.square(
+                dimension: 38,
+                child: IconButton.filled(
+                  tooltip: player.playing ? 'Pause' : 'Play',
+                  padding: EdgeInsets.zero,
+                  onPressed: player.loaded ? onToggle : null,
+                  style: IconButton.styleFrom(
+                    minimumSize: const Size.square(38),
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(9)),
+                  ),
+                  icon: Icon(
+                    player.playing ? Icons.pause_rounded : Icons.play_arrow_rounded,
+                    size: 21,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 7),
+              SizedBox(
+                width: 67,
+                child: Text(
+                  exporting ? 'Recording…' : player.timeLabel,
+                  maxLines: 1,
+                  overflow: TextOverflow.fade,
+                  softWrap: false,
+                  style: TextStyle(
+                    color: exporting ? AppColors.accent : AppColors.text,
+                    fontSize: exporting ? 10.5 : 11,
+                    fontWeight: FontWeight.w600,
+                    fontFeatures: const [FontFeature.tabularFigures()],
+                  ),
+                ),
+              ),
+              Expanded(
+                child: SliderTheme(
+                  data: SliderTheme.of(context).copyWith(
+                    trackHeight: 2,
+                    thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 5),
+                    overlayShape: const RoundSliderOverlayShape(overlayRadius: 12),
+                  ),
+                  child: Slider(
+                    min: 0,
+                    max: duration,
+                    value: position,
+                    onChanged: player.loaded ? onSeek : null,
+                  ),
+                ),
+              ),
+              SizedBox(
+                width: 42,
+                height: 34,
+                child: TextButton(
+                  onPressed: player.loaded ? () => onSpeed(nextSpeed) : null,
+                  style: TextButton.styleFrom(
+                    padding: EdgeInsets.zero,
+                    minimumSize: const Size(42, 34),
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    foregroundColor: AppColors.text,
+                    backgroundColor: AppColors.surfaceHigh,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                  ),
+                  child: Text(
+                    speedLabel,
+                    style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w700),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _InspectorSectionLabel extends StatelessWidget {
+  const _InspectorSectionLabel(this.label);
+
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    return Text(
+      label,
+      maxLines: 1,
+      overflow: TextOverflow.ellipsis,
+      style: const TextStyle(
+        color: AppColors.textMuted,
+        fontSize: 10.5,
+        fontWeight: FontWeight.w700,
+        letterSpacing: 0.45,
+      ),
+    );
+  }
+}
+
+class _InspectorBindingRow extends StatelessWidget {
+  const _InspectorBindingRow({
+    required this.icon,
+    required this.label,
+    required this.value,
+    required this.active,
+    required this.onPressed,
+    this.onClear,
+  });
+
+  final IconData icon;
+  final String label;
+  final String value;
+  final bool active;
+  final VoidCallback onPressed;
+  final VoidCallback? onClear;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 6),
+      child: Material(
+        color: AppColors.surfaceHigh,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(10),
+          side: const BorderSide(color: AppColors.line),
+        ),
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          onTap: onPressed,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(9, 7, 4, 7),
+            child: Row(
+              children: [
+                Icon(icon, size: 18, color: active ? AppColors.accent : AppColors.textMuted),
+                const SizedBox(width: 9),
+                SizedBox(
+                  width: 56,
+                  child: Text(
+                    label,
+                    style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.w700),
+                  ),
+                ),
+                Expanded(
+                  child: Text(
+                    value,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    textAlign: TextAlign.right,
+                    style: TextStyle(
+                      color: active ? AppColors.text : AppColors.textMuted,
+                      fontSize: 11,
+                    ),
+                  ),
+                ),
+                if (onClear != null)
+                  SizedBox.square(
+                    dimension: 32,
+                    child: IconButton(
+                      tooltip: 'Clear $label',
+                      padding: EdgeInsets.zero,
+                      onPressed: onClear,
+                      style: IconButton.styleFrom(
+                        minimumSize: const Size.square(32),
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      ),
+                      icon: const Icon(Icons.close_rounded, size: 15),
+                    ),
+                  )
+                else
+                  const SizedBox(width: 5),
+                const Icon(Icons.chevron_right_rounded, size: 17, color: AppColors.textMuted),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _InspectorPackageRow extends StatelessWidget {
+  const _InspectorPackageRow({required this.bundle, required this.onPressed});
+
+  final DanceAssetPackage bundle;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 6),
+      child: Material(
+        color: AppColors.surfaceHigh,
+        borderRadius: BorderRadius.circular(10),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(10),
+          onTap: onPressed,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+            child: Row(
+              children: [
+                const Icon(Icons.playlist_play_rounded, size: 19, color: AppColors.accent),
+                const SizedBox(width: 9),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        bundle.name,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.w700),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        bundle.summary,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(color: AppColors.textMuted, fontSize: 10),
+                      ),
+                    ],
+                  ),
+                ),
+                const Icon(Icons.add_rounded, size: 18),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _TinyActionButton extends StatelessWidget {
+  const _TinyActionButton({
+    required this.tooltip,
+    required this.icon,
+    required this.onPressed,
+    this.emphasized = false,
+  });
+
+  final String tooltip;
+  final IconData icon;
+  final VoidCallback? onPressed;
+  final bool emphasized;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox.square(
+      dimension: 34,
+      child: IconButton(
+        tooltip: tooltip,
+        padding: EdgeInsets.zero,
+        onPressed: onPressed,
+        style: IconButton.styleFrom(
+          minimumSize: const Size.square(34),
+          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+          backgroundColor: emphasized
+              ? AppColors.primary.withOpacity(0.32)
+              : AppColors.surfaceHigh,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+        ),
+        icon: Icon(icon, size: 18),
+      ),
+    );
+  }
+}
+
+class _LibraryKindButton extends StatelessWidget {
+  const _LibraryKindButton({
+    required this.kind,
+    required this.count,
+    required this.selected,
+    required this.onPressed,
+  });
+
+  final AssetKind kind;
+  final int count;
+  final bool selected;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    return Tooltip(
+      message: kind.label,
+      child: Material(
+        color: selected ? AppColors.primary.withOpacity(0.28) : AppColors.surfaceHigh,
+        borderRadius: BorderRadius.circular(9),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(9),
+          onTap: onPressed,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 9),
+            child: Row(
+              children: [
+                Icon(_iconForKind(kind), size: 17, color: selected ? AppColors.accent : null),
+                const SizedBox(width: 5),
+                Text(
+                  '$count',
+                  style: const TextStyle(fontSize: 10.5, fontWeight: FontWeight.w700),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _InspectorEmpty extends StatelessWidget {
+  const _InspectorEmpty({
+    required this.icon,
+    required this.message,
+    this.actionLabel,
+    this.onAction,
+  });
+
+  final IconData icon;
+  final String message;
+  final String? actionLabel;
+  final VoidCallback? onAction;
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 28),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 32, color: AppColors.textMuted),
+            const SizedBox(height: 9),
+            Text(
+              message,
+              textAlign: TextAlign.center,
+              style: const TextStyle(color: AppColors.textMuted, fontSize: 11.5, height: 1.35),
+            ),
+            if (actionLabel != null && onAction != null) ...[
+              const SizedBox(height: 11),
+              TextButton(onPressed: onAction, child: Text(actionLabel!)),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _InspectorAssetRow extends StatelessWidget {
+  const _InspectorAssetRow({
+    required this.asset,
+    required this.selected,
+    required this.onPressed,
+    required this.onDetails,
+  });
+
+  final LibraryAsset asset;
+  final bool selected;
+  final VoidCallback onPressed;
+  final VoidCallback onDetails;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 6),
+      child: Material(
+        color: selected ? AppColors.primary.withOpacity(0.18) : AppColors.surfaceHigh,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(10),
+          side: BorderSide(
+            color: selected ? AppColors.primary.withOpacity(0.66) : AppColors.line,
+          ),
+        ),
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          onTap: onPressed,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(9, 8, 3, 8),
+            child: Row(
+              children: [
+                Container(
+                  width: 34,
+                  height: 34,
+                  decoration: BoxDecoration(
+                    color: AppColors.background.withOpacity(0.48),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Icon(_iconForKind(asset.kind), size: 18),
+                ),
+                const SizedBox(width: 9),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        asset.name,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.w700),
+                      ),
+                      const SizedBox(height: 3),
+                      Text(
+                        '${_assetCapability(asset)} · ${_formatBytes(asset.totalBytes)}',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(color: AppColors.textMuted, fontSize: 9.8),
+                      ),
+                    ],
+                  ),
+                ),
+                if (selected)
+                  const Icon(Icons.check_circle_rounded, size: 16, color: AppColors.success),
+                SizedBox.square(
+                  dimension: 34,
+                  child: IconButton(
+                    tooltip: 'Resource details',
+                    padding: EdgeInsets.zero,
+                    onPressed: onDetails,
+                    style: IconButton.styleFrom(
+                      minimumSize: const Size.square(34),
+                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    ),
+                    icon: const Icon(Icons.more_horiz_rounded, size: 18),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _CompactResourceIdentity extends StatelessWidget {
+  const _CompactResourceIdentity({required this.asset});
+
+  final LibraryAsset asset;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: AppColors.surfaceHigh,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: AppColors.line),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 38,
+            height: 38,
+            decoration: BoxDecoration(
+              color: AppColors.background.withOpacity(0.5),
+              borderRadius: BorderRadius.circular(9),
+            ),
+            child: Icon(_iconForKind(asset.kind), size: 20),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  asset.name,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.w700),
+                ),
+                const SizedBox(height: 3),
+                Text(
+                  _assetCapability(asset),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(color: AppColors.textMuted, fontSize: 10.5),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _CompactMetadata extends StatelessWidget {
+  const _CompactMetadata({required this.asset});
+
+  final LibraryAsset asset;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+      decoration: BoxDecoration(
+        color: AppColors.surfaceHigh,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: AppColors.line),
+      ),
+      child: Column(
+        children: [
+          _CompactMetadataLine(label: 'Type', value: asset.kind.label),
+          _CompactMetadataLine(label: 'Files', value: '${asset.fileCount}'),
+          _CompactMetadataLine(label: 'Size', value: _formatBytes(asset.totalBytes)),
+          _CompactMetadataLine(label: 'Source', value: asset.sourceName),
+        ],
+      ),
+    );
+  }
+}
+
+class _CompactMetadataLine extends StatelessWidget {
+  const _CompactMetadataLine({required this.label, required this.value});
+
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 3),
+      child: Row(
+        children: [
+          SizedBox(
+            width: 48,
+            child: Text(label, style: const TextStyle(color: AppColors.textMuted, fontSize: 10.5)),
+          ),
+          Expanded(
+            child: Text(
+              value,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              textAlign: TextAlign.right,
+              style: const TextStyle(fontSize: 10.5),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _CompactNotice extends StatelessWidget {
+  const _CompactNotice({required this.icon, required this.text});
+
+  final IconData icon;
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(9),
+      decoration: BoxDecoration(
+        color: AppColors.surfaceHigh,
+        borderRadius: BorderRadius.circular(9),
+        border: Border.all(color: AppColors.line),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(icon, size: 17, color: AppColors.accent),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              text,
+              style: const TextStyle(color: AppColors.textMuted, fontSize: 10.5, height: 1.35),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _CompactActionTile extends StatelessWidget {
+  const _CompactActionTile({
+    required this.icon,
+    required this.label,
+    required this.onPressed,
+  });
+
+  final IconData icon;
+  final String label;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: AppColors.surfaceHigh,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(10),
+        side: const BorderSide(color: AppColors.line),
+      ),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(10),
+        onTap: onPressed,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 10),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(icon, size: 18, color: AppColors.accent),
+              const SizedBox(width: 7),
+              Flexible(
+                child: Text(
+                  label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.w700),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _CompactValueSlider extends StatelessWidget {
+  const _CompactValueSlider({
+    required this.label,
+    required this.value,
+    required this.min,
+    required this.max,
+    required this.onChanged,
+    this.suffix = '',
+    this.precision = 1,
+    this.accent = AppColors.accent,
+  });
+
+  final String label;
+  final double value;
+  final double min;
+  final double max;
+  final ValueChanged<double> onChanged;
+  final String suffix;
+  final int precision;
+  final Color accent;
+
+  @override
+  Widget build(BuildContext context) {
+    final clamped = value.clamp(min, max).toDouble();
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 6),
+      child: Container(
+        padding: const EdgeInsets.fromLTRB(9, 7, 8, 2),
+        decoration: BoxDecoration(
+          color: AppColors.surfaceHigh,
+          borderRadius: BorderRadius.circular(9),
+          border: Border.all(color: AppColors.line),
+        ),
+        child: Column(
+          children: [
+            Row(
+              children: [
+                Container(
+                  width: 5,
+                  height: 5,
+                  decoration: BoxDecoration(color: accent, shape: BoxShape.circle),
+                ),
+                const SizedBox(width: 7),
+                Expanded(
+                  child: Text(
+                    label,
+                    style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600),
+                  ),
+                ),
+                Text(
+                  '${clamped.toStringAsFixed(precision)}$suffix',
+                  style: const TextStyle(
+                    color: AppColors.textMuted,
+                    fontSize: 10.5,
+                    fontFeatures: [FontFeature.tabularFigures()],
+                  ),
+                ),
+              ],
+            ),
+            SizedBox(
+              height: 30,
+              child: SliderTheme(
+                data: SliderTheme.of(context).copyWith(
+                  activeTrackColor: accent,
+                  trackHeight: 2,
+                  thumbColor: AppColors.text,
+                  thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 5),
+                  overlayShape: const RoundSliderOverlayShape(overlayRadius: 11),
+                ),
+                child: Slider(min: min, max: max, value: clamped, onChanged: onChanged),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _CompactSwitchRow extends StatelessWidget {
+  const _CompactSwitchRow({
+    required this.icon,
+    required this.label,
+    required this.value,
+    required this.onChanged,
+  });
+
+  final IconData icon;
+  final String label;
+  final bool value;
+  final ValueChanged<bool> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 6),
+      child: Container(
+        height: 48,
+        padding: const EdgeInsets.only(left: 10, right: 3),
+        decoration: BoxDecoration(
+          color: AppColors.surfaceHigh,
+          borderRadius: BorderRadius.circular(9),
+          border: Border.all(color: AppColors.line),
+        ),
+        child: Row(
+          children: [
+            Icon(icon, size: 18, color: value ? AppColors.accent : AppColors.textMuted),
+            const SizedBox(width: 9),
+            Expanded(
+              child: Text(
+                label,
+                style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.w600),
+              ),
+            ),
+            Transform.scale(
+              scale: 0.78,
+              child: Switch.adaptive(value: value, onChanged: onChanged),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _CompactPartRow extends StatelessWidget {
+  const _CompactPartRow({required this.part, required this.onChanged});
+
+  final ViewerPart part;
+  final VoidCallback onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(8),
+        onTap: onChanged,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+          child: Row(
+            children: [
+              Icon(
+                part.visible ? Icons.visibility_outlined : Icons.visibility_off_outlined,
+                size: 17,
+                color: part.visible ? AppColors.accent : AppColors.textMuted,
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  part.name,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 11),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _CompactPresetRow extends StatelessWidget {
+  const _CompactPresetRow({required this.selected, required this.onSelected});
+
+  final String selected;
+  final ValueChanged<String> onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    const presets = [
+      ('balanced', 'Balanced'),
+      ('clear', 'Clear'),
+      ('vivid', 'Vivid'),
+      ('stage', 'Stage'),
+    ];
+    return Wrap(
+      spacing: 5,
+      runSpacing: 5,
+      children: [
+        for (final preset in presets)
+          _CompactChoiceButton(
+            label: preset.$2,
+            selected: selected == preset.$1,
+            onPressed: () => onSelected(preset.$1),
+          ),
+      ],
+    );
+  }
+}
+
+class _CompactNudgeGrid extends StatelessWidget {
+  const _CompactNudgeGrid({required this.onMove});
+
+  final void Function(double x, double y, double z) onMove;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(8),
+      decoration: BoxDecoration(
+        color: AppColors.surfaceHigh,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: AppColors.line),
+      ),
+      child: Column(
+        children: [
+          _NudgeAxisRow(
+            label: 'X',
+            color: AppColors.danger,
+            onMinus: () => onMove(-0.1, 0, 0),
+            onPlus: () => onMove(0.1, 0, 0),
+          ),
+          _NudgeAxisRow(
+            label: 'Y',
+            color: AppColors.success,
+            onMinus: () => onMove(0, -0.1, 0),
+            onPlus: () => onMove(0, 0.1, 0),
+          ),
+          _NudgeAxisRow(
+            label: 'Z',
+            color: AppColors.accent,
+            onMinus: () => onMove(0, 0, -0.1),
+            onPlus: () => onMove(0, 0, 0.1),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _NudgeAxisRow extends StatelessWidget {
+  const _NudgeAxisRow({
+    required this.label,
+    required this.color,
+    required this.onMinus,
+    required this.onPlus,
+  });
+
+  final String label;
+  final Color color;
+  final VoidCallback onMinus;
+  final VoidCallback onPlus;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      height: 37,
+      child: Row(
+        children: [
+          SizedBox(
+            width: 28,
+            child: Text(
+              label,
+              style: TextStyle(color: color, fontSize: 12, fontWeight: FontWeight.w800),
+            ),
+          ),
+          Expanded(
+            child: _NudgeStepButton(icon: Icons.remove_rounded, onPressed: onMinus),
+          ),
+          const SizedBox(width: 6),
+          Expanded(
+            child: _NudgeStepButton(icon: Icons.add_rounded, onPressed: onPlus),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _NudgeStepButton extends StatelessWidget {
+  const _NudgeStepButton({required this.icon, required this.onPressed});
+
+  final IconData icon;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      height: 29,
+      child: OutlinedButton(
+        onPressed: onPressed,
+        style: OutlinedButton.styleFrom(
+          minimumSize: const Size(40, 29),
+          padding: EdgeInsets.zero,
+          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(7)),
+        ),
+        child: Icon(icon, size: 17),
+      ),
+    );
+  }
+}
+
+class _ChoiceValue {
+  const _ChoiceValue(this.value, this.label);
+
+  final String value;
+  final String label;
+}
+
+class _CompactChoiceRow extends StatelessWidget {
+  const _CompactChoiceRow({
+    required this.label,
+    required this.value,
+    required this.options,
+    required this.onSelected,
+  });
+
+  final String label;
+  final String value;
+  final List<_ChoiceValue> options;
+  final ValueChanged<String> onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    final unique = <String, _ChoiceValue>{
+      for (final option in options) option.value: option,
+    }.values.toList(growable: false);
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Container(
+        padding: const EdgeInsets.all(9),
+        decoration: BoxDecoration(
+          color: AppColors.surfaceHigh,
+          borderRadius: BorderRadius.circular(9),
+          border: Border.all(color: AppColors.line),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              label,
+              style: const TextStyle(color: AppColors.textMuted, fontSize: 10.5, fontWeight: FontWeight.w700),
+            ),
+            const SizedBox(height: 7),
+            Wrap(
+              spacing: 5,
+              runSpacing: 5,
+              children: [
+                for (final option in unique)
+                  _CompactChoiceButton(
+                    label: option.label,
+                    selected: option.value == value,
+                    onPressed: () => onSelected(option.value),
+                  ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _CompactChoiceButton extends StatelessWidget {
+  const _CompactChoiceButton({
+    required this.label,
+    required this.selected,
+    required this.onPressed,
+  });
+
+  final String label;
+  final bool selected;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      height: 31,
+      child: TextButton(
+        onPressed: onPressed,
+        style: TextButton.styleFrom(
+          foregroundColor: selected ? AppColors.text : AppColors.textMuted,
+          backgroundColor: selected
+              ? AppColors.primary.withOpacity(0.34)
+              : AppColors.background.withOpacity(0.28),
+          padding: const EdgeInsets.symmetric(horizontal: 10),
+          minimumSize: const Size(38, 31),
+          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(8),
+            side: BorderSide(color: selected ? AppColors.primary : AppColors.line),
+          ),
+        ),
+        child: Text(label, style: const TextStyle(fontSize: 10.5, fontWeight: FontWeight.w700)),
+      ),
+    );
+  }
+}
+
+class _CompactLogLine extends StatelessWidget {
+  const _CompactLogLine({required this.entry});
+
+  final AppLogEntry entry;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = switch (entry.level) {
+      AppLogLevel.info => AppColors.textMuted,
+      AppLogLevel.warning => Colors.amberAccent,
+      AppLogLevel.error => AppColors.danger,
+    };
+    return SelectableText(
+      entry.line,
+      style: TextStyle(color: color, fontFamily: 'monospace', fontSize: 10.5, height: 1.35),
     );
   }
 }
